@@ -24,6 +24,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/rand"
+	"os"
 	"strconv"
 	"strings"
 
@@ -89,8 +90,12 @@ func newManager(configReader io.Reader, nodeGroupSpecs []string, do cloudprovide
 		}
 	}
 
-	if cfg.APIKey == "" {
-		return nil, errors.New("access token is not provided")
+	clusterID := os.Getenv("PAPERSPACE_CLUSTER_ID")
+	if cfg.ClusterID != "" {
+		clusterID = cfg.ClusterID
+	}
+	if clusterID == "" {
+		return nil, errors.New("cluster id is not provided")
 	}
 
 	apiBackend := psgo.NewAPIBackend()
@@ -102,7 +107,14 @@ func newManager(configReader io.Reader, nodeGroupSpecs []string, do cloudprovide
 	}
 
 	client := psgo.NewClientWithBackend(apiBackend)
-	client.APIKey = cfg.APIKey
+
+	if cfg.APIKey == "" {
+		client.APIKey = cfg.APIKey
+	}
+
+	if client.APIKey == "" {
+		return nil, errors.New("access token is not provided")
+	}
 
 	//specs, err := do.ParseASGAutoDiscoverySpecs()
 	//if err != nil {
@@ -129,7 +141,7 @@ func newManager(configReader io.Reader, nodeGroupSpecs []string, do cloudprovide
 
 	m := &Manager{
 		client:     client,
-		clusterID:  cfg.ClusterID,
+		clusterID:  clusterID,
 		nodeGroups: nodeGroups,
 	}
 
