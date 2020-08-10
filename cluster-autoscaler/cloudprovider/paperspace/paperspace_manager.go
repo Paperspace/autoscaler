@@ -54,10 +54,9 @@ var _ nodeGroupClient = (*psgo.Client)(nil)
 // Manager handles Paperspace communication and data caching of
 // node groups (node pools in DOKS)
 type Manager struct {
-	client         nodeGroupClient
-	clusterID      string
-	nodeGroups     []*NodeGroup
-	nodeGroupSpecs []*NodeGroup
+	client     nodeGroupClient
+	clusterID  string
+	nodeGroups []*NodeGroup
 }
 
 // Config is the configuration of the Paperspace cloud provider
@@ -159,9 +158,9 @@ func (m *Manager) Refresh() error {
 		Filter:        nil,
 		IncludeNodes:  true,
 	}
-	if len(m.nodeGroupSpecs) > 0 {
+	if len(m.nodeGroups) > 0 {
 		var ids []string
-		for _, nodeGroup := range m.nodeGroupSpecs {
+		for _, nodeGroup := range m.nodeGroups {
 			ids = append(ids, nodeGroup.id)
 		}
 		params.Filter = make(map[string]string, 1)
