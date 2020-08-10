@@ -54,9 +54,10 @@ var _ nodeGroupClient = (*psgo.Client)(nil)
 // Manager handles Paperspace communication and data caching of
 // node groups (node pools in DOKS)
 type Manager struct {
-	client     nodeGroupClient
-	clusterID  string
-	nodeGroups []*NodeGroup
+	client         nodeGroupClient
+	clusterID      string
+	nodeGroups     []*NodeGroup
+	nodeGroupSpecs []*NodeGroup
 }
 
 // Config is the configuration of the Paperspace cloud provider
@@ -108,7 +109,7 @@ func newManager(configReader io.Reader, nodeGroupSpecs []string, do cloudprovide
 
 	client := psgo.NewClientWithBackend(apiBackend)
 
-	if cfg.APIKey == "" {
+	if cfg.APIKey != "" {
 		client.APIKey = cfg.APIKey
 	}
 
@@ -129,14 +130,15 @@ func newManager(configReader io.Reader, nodeGroupSpecs []string, do cloudprovide
 		min, _ := strconv.Atoi(specs[0])
 		max, _ := strconv.Atoi(specs[1])
 		id := specs[2]
-		nodeGroups = append(nodeGroups, &NodeGroup{
+		nodeGroup := &NodeGroup{
 			id:        id,
 			clusterID: cfg.ClusterID,
 			manager:   nil,
 			asg:       psgo.AutoscalingGroup{},
 			minSize:   min,
 			maxSize:   max,
-		})
+		}
+		nodeGroups = append(nodeGroups, nodeGroup)
 	}
 
 	m := &Manager{
@@ -157,13 +159,21 @@ func (m *Manager) Refresh() error {
 		Filter:        nil,
 		IncludeNodes:  true,
 	}
-	if len(m.nodeGroups) > 0 {
+	if len(m.nodeGroupSpecs) > 0 {
 		var ids []string
-		for _, nodeGroup := range m.nodeGroups {
+		for _, nodeGroup := range m.nodeGroupSpecs {
 			ids = append(ids, nodeGroup.id)
 		}
 		params.Filter = make(map[string]string, 1)
-		params.Filter["where"] = fmt.Sprintf(`id: { inq: ["%s"] }`, strings.Join(ids, `", "`))
+		jsonIDs, err := json.Marshal(ids)
+		if err != nil {
+			return err
+		}
+
+		params.Filter["where"] = fmt.Sprintf(`{"id": { "inq": %s }}`, jsonIDs)
+	} else {
+		params.Filter = make(map[string]string, 1)
+		params.Filter["where"] = fmt.Sprintf(`{"clusterId": "%s"}`, m.clusterID)
 	}
 	autoscalingGroups, err := m.client.GetAutoscalingGroups(params)
 	if err != nil {
