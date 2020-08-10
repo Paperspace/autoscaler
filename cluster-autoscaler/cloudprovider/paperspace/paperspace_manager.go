@@ -155,7 +155,6 @@ func (m *Manager) Refresh() error {
 	ctx := context.Background()
 	params := psgo.AutoscalingGroupListParams{
 		RequestParams: psgo.RequestParams{Context: ctx},
-		Filter:        nil,
 		IncludeNodes:  true,
 	}
 	if len(m.nodeGroups) > 0 {
@@ -163,16 +162,25 @@ func (m *Manager) Refresh() error {
 		for _, nodeGroup := range m.nodeGroups {
 			ids = append(ids, nodeGroup.id)
 		}
-		params.Filter = make(map[string]string, 1)
 		jsonIDs, err := json.Marshal(ids)
 		if err != nil {
 			return err
 		}
-
-		params.Filter["where"] = fmt.Sprintf(`{"id": { "inq": %s }}`, jsonIDs)
+		whereFilter := fmt.Sprintf(`{"id": { "inq": %s }}`, jsonIDs)
+		where := make(map[string]interface{})
+		err = json.Unmarshal([]byte(whereFilter), &where)
+		if err != nil {
+			return err
+		}
+		params.Filter.Where = where
 	} else {
-		params.Filter = make(map[string]string, 1)
-		params.Filter["where"] = fmt.Sprintf(`{"clusterId": "%s"}`, m.clusterID)
+		whereFilter := fmt.Sprintf(`{"clusterId": "%s"}`, m.clusterID)
+		where := make(map[string]interface{})
+		err := json.Unmarshal([]byte(whereFilter), &where)
+		if err != nil {
+			return err
+		}
+		params.Filter.Where = where
 	}
 	autoscalingGroups, err := m.client.GetAutoscalingGroups(params)
 	if err != nil {
