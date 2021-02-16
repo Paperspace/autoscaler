@@ -116,6 +116,9 @@ func (n *NodeGroup) IncreaseSize(delta int) error {
 func (n *NodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
+	if n.asg.Current <= n.MinSize() {
+		return fmt.Errorf("min size reached, nodes will not be deleted")
+	}
 
 	ctx := context.Background()
 	for _, node := range nodes {
@@ -123,21 +126,30 @@ func (n *NodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		if nodeID == "" {
 			// CA creates fake node objects to represent upcoming VMs that
 			// haven't registered as nodes yet. We cannot delete the node at
-			// this point.
-			return fmt.Errorf("cannot delete node %q with provider ID %q on node pool %q: node ID label %q is missing", node.Name, node.Spec.ProviderID, n.id, nodeIDLabel)
+			// this point so we just decrease the desired size.
+			targetSize := n.asg.Current - 1
+			req := psgo.AutoscalingGroupUpdateParams{
+				RequestParams: psgo.RequestParams{Context: ctx},
+				Attributes: psgo.AutoscalingGroupUpdateAttributeParams{
+					Current: &targetSize,
+				},
+			}
+			err := n.manager.client.UpdateAutoscalingGroup(n.id, req)
+			if err != nil {
+				return err
+			}
+		} else {
+			err := n.manager.client.DeleteMachine(nodeID, psgo.MachineDeleteParams{RequestParams: psgo.RequestParams{Context: ctx}})
+			if err != nil {
+				return fmt.Errorf("deleting node failed for cluster: %q node pool: %q node: %q: %s",
+					n.clusterID, n.id, nodeID, err)
+			}
 		}
 
-		err := n.manager.client.DeleteMachine(nodeID, psgo.MachineDeleteParams{RequestParams: psgo.RequestParams{Context: ctx}})
-		if err != nil {
-			return fmt.Errorf("deleting node failed for cluster: %q node pool: %q node: %q: %s",
-				n.clusterID, n.id, nodeID, err)
-		}
-		if err := n.DecreaseTargetSize(-1); err != nil {
-			return err
-		}
+		// update internal cache
+		n.asg.Current--
 	}
-
-	return nil
+	return n.manager.Refresh()
 }
 
 // DecreaseTargetSize decreases the target size of the node group. This function
@@ -154,6 +166,9 @@ func (n *NodeGroup) DecreaseTargetSize(delta int) error {
 	if targetSize < n.MinSize() {
 		return fmt.Errorf("size decrease is too small. current: %d desired: %d min: %d",
 			n.asg.Current, targetSize, n.MinSize())
+	}
+	if targetSize < len(n.asg.Nodes) {
+		return fmt.Errorf("cannot lower target size below current node count")
 	}
 
 	ctx := context.Background()
