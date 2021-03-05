@@ -29,6 +29,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/gce"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/packet"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/paperspace"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 )
 
@@ -67,6 +68,8 @@ func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGro
 		return packet.BuildPacket(opts, do, rl)
 	case clusterapi.ProviderName:
 		return clusterapi.BuildClusterAPI(opts, do, rl)
+	case paperspace.ProviderName:
+		return paperspace.BuildPaperspace(opts, do, rl)
 	}
 	return nil
 }
