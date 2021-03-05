@@ -43,6 +43,7 @@ var AvailableCloudProviders = []string{
 	cloudprovider.MagnumProviderName,
 	cloudprovider.DigitalOceanProviderName,
 	clusterapi.ProviderName,
+	paperspace.ProviderName,
 }
 
 // DefaultCloudProvider is GCE.
