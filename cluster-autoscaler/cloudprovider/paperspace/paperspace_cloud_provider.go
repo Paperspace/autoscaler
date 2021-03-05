@@ -85,10 +85,13 @@ func (ps *paperspaceCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 // should not be processed by cluster autoscaler, or non-nil error if such
 // occurred. Must be implemented.
 func (ps *paperspaceCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
+	if len(node.Spec.ProviderID) == 0 {
+		klog.V(5).Infof("Node %v has no providerId", node.Name)
+		return nil, nil
+	}
 	providerID := node.Spec.ProviderID
-	nodeID := toNodeID(providerID)
 
-	klog.V(5).Infof("checking nodegroup for node ID: %q", nodeID)
+	klog.V(5).Infof("checking nodegroup for provider ID: %q", providerID)
 
 	for _, group := range ps.manager.nodeGroups {
 		klog.V(5).Infof("iterating over node group %q", group.Id())

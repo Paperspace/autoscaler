@@ -244,13 +244,11 @@ func (m *Manager) buildNodeFromTemplate(asg psgo.AutoscalingGroup) (*apiv1.Node,
 		return nil, err
 	}
 
-	// TODO: get a real value.
 	node.Status.Capacity[apiv1.ResourcePods] = *resource.NewQuantity(110, resource.DecimalSI)
 	node.Status.Capacity[apiv1.ResourceCPU] = *resource.NewQuantity(machineType.CPU, resource.DecimalSI)
 	node.Status.Capacity[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(machineType.GPU, resource.DecimalSI)
 	node.Status.Capacity[apiv1.ResourceMemory] = *resource.NewQuantity(machineType.RAM, resource.DecimalSI)
 
-	// TODO: use proper allocatable!!
 	node.Status.Allocatable = node.Status.Capacity
 
 	// NodeLabels
