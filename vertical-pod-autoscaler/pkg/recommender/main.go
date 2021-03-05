@@ -20,6 +20,7 @@ import (
 	"flag"
 	"time"
 
+	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/common"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/history"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
@@ -27,7 +28,6 @@ import (
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics"
 	metrics_quality "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/quality"
 	metrics_recommender "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/recommender"
-	"k8s.io/client-go/rest"
 	kube_flag "k8s.io/component-base/cli/flag"
 	"k8s.io/klog"
 )
@@ -38,6 +38,7 @@ var (
 	prometheusAddress      = flag.String("prometheus-address", "", `Where to reach for Prometheus metrics`)
 	prometheusJobName      = flag.String("prometheus-cadvisor-job-name", "kubernetes-cadvisor", `Name of the prometheus job name which scrapes the cAdvisor metrics`)
 	address                = flag.String("address", ":8942", "The address to expose Prometheus metrics.")
+	kubeconfig             = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	kubeApiQps             = flag.Float64("kube-api-qps", 5.0, `QPS limit when making requests to Kubernetes apiserver`)
 	kubeApiBurst           = flag.Float64("kube-api-burst", 10.0, `QPS burst limit when making requests to Kubernetes apiserver`)
 
@@ -53,6 +54,7 @@ var (
 	ctrNamespaceLabel   = flag.String("container-namespace-label", "namespace", `Label name to look for container names`)
 	ctrPodNameLabel     = flag.String("container-pod-name-label", "pod_name", `Label name to look for container names`)
 	ctrNameLabel        = flag.String("container-name-label", "name", `Label name to look for container names`)
+	vpaObjectNamespace  = flag.String("vpa-object-namespace", apiv1.NamespaceAll, "Namespace to search for VPA objects and pod stats. Empty means all namespaces will be used.")
 )
 
 // Aggregation configuration flags
@@ -68,7 +70,7 @@ func main() {
 	kube_flag.InitFlags()
 	klog.V(1).Infof("Vertical Pod Autoscaler %s Recommender", common.VerticalPodAutoscalerVersion)
 
-	config := createKubeConfig(float32(*kubeApiQps), int(*kubeApiBurst))
+	config := common.CreateKubeConfigOrDie(*kubeconfig, float32(*kubeApiQps), int(*kubeApiBurst))
 
 	model.InitializeAggregationsConfig(model.NewAggregationsConfig(*memoryAggregationInterval, *memoryAggregationIntervalCount, *memoryHistogramDecayHalfLife, *cpuHistogramDecayHalfLife))
 
@@ -78,7 +80,7 @@ func main() {
 	metrics_quality.Register()
 
 	useCheckpoints := *storage != "prometheus"
-	recommender := routines.NewRecommender(config, *checkpointsGCInterval, useCheckpoints)
+	recommender := routines.NewRecommender(config, *checkpointsGCInterval, useCheckpoints, *vpaObjectNamespace)
 
 	promQueryTimeout, err := time.ParseDuration(*queryTimeout)
 	if err != nil {
@@ -101,6 +103,7 @@ func main() {
 			CtrPodNameLabel:        *ctrPodNameLabel,
 			CtrNameLabel:           *ctrNameLabel,
 			CadvisorMetricsJobName: *prometheusJobName,
+			Namespace:              *vpaObjectNamespace,
 		}
 		provider, err := history.NewPrometheusHistoryProvider(config)
 		if err != nil {
@@ -114,15 +117,4 @@ func main() {
 		recommender.RunOnce()
 		healthCheck.UpdateLastActivity()
 	}
-
-}
-
-func createKubeConfig(kubeApiQps float32, kubeApiBurst int) *rest.Config {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		klog.Fatalf("Failed to create config: %v", err)
-	}
-	config.QPS = kubeApiQps
-	config.Burst = kubeApiBurst
-	return config
 }

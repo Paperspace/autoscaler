@@ -17,13 +17,17 @@ limitations under the License.
 package cm
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	// TODO: Migrate kubelet to either use its own internal objects or client library.
 	v1 "k8s.io/api/core/v1"
 	internalapi "k8s.io/cri-api/pkg/apis"
-	podresourcesapi "k8s.io/kubernetes/pkg/kubelet/apis/podresources/v1alpha1"
+	podresourcesapi "k8s.io/kubelet/pkg/apis/podresources/v1"
+	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
@@ -31,11 +35,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/pluginmanager/cache"
 	"k8s.io/kubernetes/pkg/kubelet/status"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
-
-	"fmt"
-	"strconv"
-	"strings"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type ActivePodsFunc func() []*v1.Pod
@@ -106,6 +106,9 @@ type ContainerManager interface {
 	// GetDevices returns information about the devices assigned to pods and containers
 	GetDevices(podUID, containerName string) []*podresourcesapi.ContainerDevices
 
+	// GetCPUs returns information about the cpus assigned to pods and containers
+	GetCPUs(podUID, containerName string) []int64
+
 	// ShouldResetExtendedResourceCapacity returns whether or not the extended resources should be zeroed,
 	// due to node recreation.
 	ShouldResetExtendedResourceCapacity() bool
@@ -128,13 +131,16 @@ type NodeConfig struct {
 	KubeletRootDir        string
 	ProtectKernelDefaults bool
 	NodeAllocatableConfig
-	QOSReserved                           map[v1.ResourceName]int64
-	ExperimentalCPUManagerPolicy          string
-	ExperimentalCPUManagerReconcilePeriod time.Duration
-	ExperimentalPodPidsLimit              int64
-	EnforceCPULimits                      bool
-	CPUCFSQuotaPeriod                     time.Duration
-	ExperimentalTopologyManagerPolicy     string
+	QOSReserved                             map[v1.ResourceName]int64
+	ExperimentalCPUManagerPolicy            string
+	ExperimentalTopologyManagerScope        string
+	ExperimentalCPUManagerReconcilePeriod   time.Duration
+	ExperimentalMemoryManagerPolicy         string
+	ExperimentalMemoryManagerReservedMemory []kubeletconfig.MemoryReservation
+	ExperimentalPodPidsLimit                int64
+	EnforceCPULimits                        bool
+	CPUCFSQuotaPeriod                       time.Duration
+	ExperimentalTopologyManagerPolicy       string
 }
 
 type NodeAllocatableConfig struct {

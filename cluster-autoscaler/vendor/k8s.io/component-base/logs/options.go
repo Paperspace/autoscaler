@@ -24,6 +24,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 
+	"k8s.io/component-base/logs/sanitization"
 	"k8s.io/klog/v2"
 )
 
@@ -34,13 +35,14 @@ const (
 
 // List of logs (k8s.io/klog + k8s.io/component-base/logs) flags supported by all logging formats
 var supportedLogsFlags = map[string]struct{}{
-	"v":       {},
-	"vmodule": {},
+	"v": {},
+	// TODO: support vmodule after 1.19 Alpha
 }
 
 // Options has klog format parameters
 type Options struct {
-	LogFormat string
+	LogFormat       string
+	LogSanitization bool
 }
 
 // NewOptions return new klog options
@@ -88,6 +90,8 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 
 	// No new log formats should be added after generation is of flag options
 	logRegistry.Freeze()
+	fs.BoolVar(&o.LogSanitization, "experimental-logging-sanitization", o.LogSanitization, `[Experimental] When enabled prevents logging of fields tagged as sensitive (passwords, keys, tokens).
+Runtime log sanitization may introduce significant computation overhead and therefore should not be enabled in production.`)
 }
 
 // Apply set klog logger from LogFormat type
@@ -95,6 +99,9 @@ func (o *Options) Apply() {
 	// if log format not exists, use nil loggr
 	loggr, _ := o.Get()
 	klog.SetLogger(loggr)
+	if o.LogSanitization {
+		klog.SetLogFilter(&sanitization.SanitizingFilter{})
+	}
 }
 
 // Get logger with LogFormat field
@@ -110,7 +117,7 @@ func unsupportedLoggingFlags() []string {
 	klog.InitFlags(fs)
 	fs.VisitAll(func(flag *flag.Flag) {
 		if _, found := supportedLogsFlags[flag.Name]; !found {
-			allFlags = append(allFlags, flag.Name)
+			allFlags = append(allFlags, strings.Replace(flag.Name, "_", "-", -1))
 		}
 	})
 

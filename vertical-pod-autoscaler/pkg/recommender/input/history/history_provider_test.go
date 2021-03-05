@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	prommodel "github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
@@ -31,9 +32,11 @@ import (
 )
 
 const (
-	cpuQuery    = "rate(container_cpu_usage_seconds_total{job=\"kubernetes-cadvisor\", pod_name=~\".+\", name!=\"POD\", name!=\"\"}[30s])"
-	memoryQuery = "container_memory_working_set_bytes{job=\"kubernetes-cadvisor\", pod_name=~\".+\", name!=\"POD\", name!=\"\"}"
-	labelsQuery = "up{job=\"kubernetes-pods\"}"
+	cpuQuery              = "rate(container_cpu_usage_seconds_total{job=\"kubernetes-cadvisor\", pod_name=~\".+\", name!=\"POD\", name!=\"\"}[30s])"
+	memoryQuery           = "container_memory_working_set_bytes{job=\"kubernetes-cadvisor\", pod_name=~\".+\", name!=\"POD\", name!=\"\"}"
+	labelsQuery           = "up{job=\"kubernetes-pods\"}"
+	cpuNamespacedQuery    = "rate(container_cpu_usage_seconds_total{job=\"kubernetes-cadvisor\", pod_name=~\".+\", name!=\"POD\", name!=\"\", namespace=\"kube-system\"}[30s])"
+	memoryNamespacedQuery = "container_memory_working_set_bytes{job=\"kubernetes-cadvisor\", pod_name=~\".+\", name!=\"POD\", name!=\"\", namespace=\"kube-system\"}"
 )
 
 func getDefaultPrometheusHistoryProviderConfigForTest() PrometheusHistoryProviderConfig {
@@ -59,54 +62,79 @@ type mockPrometheusAPI struct {
 func (m mockPrometheusAPI) AlertManagers(ctx context.Context) (prometheusv1.AlertManagersResult, error) {
 	panic("not implemented")
 }
+
+func (m mockPrometheusAPI) Alerts(ctx context.Context) (prometheusv1.AlertsResult, error) {
+	panic("not implemented")
+}
+
 func (m mockPrometheusAPI) CleanTombstones(ctx context.Context) error {
 	panic("not implemented")
 }
+
 func (m mockPrometheusAPI) Config(ctx context.Context) (prometheusv1.ConfigResult, error) {
 	panic("not implemented")
 }
+
 func (m mockPrometheusAPI) DeleteSeries(ctx context.Context, matches []string, startTime time.Time, endTime time.Time) error {
 	panic("not implemented")
 }
+
 func (m mockPrometheusAPI) Flags(ctx context.Context) (prometheusv1.FlagsResult, error) {
 	panic("not implemented")
 }
+
+func (m mockPrometheusAPI) LabelNames(ctx context.Context) ([]string, error) {
+	panic("not implemented")
+}
+
 func (m mockPrometheusAPI) LabelValues(ctx context.Context, label string) (prommodel.LabelValues, error) {
 	panic("not implemented")
 }
-func (m mockPrometheusAPI) Series(ctx context.Context, matches []string, startTime time.Time, endTime time.Time) ([]prommodel.LabelSet, error) {
+
+func (m mockPrometheusAPI) Series(ctx context.Context, matches []string, startTime time.Time, endTime time.Time) ([]prommodel.LabelSet, api.Warnings, error) {
 	panic("not implemented")
 }
+
+func (m mockPrometheusAPI) Rules(ctx context.Context) (prometheusv1.RulesResult, error) {
+	panic("not implemented")
+}
+
 func (m mockPrometheusAPI) Snapshot(ctx context.Context, skipHead bool) (prometheusv1.SnapshotResult, error) {
 	panic("not implemented")
 }
+
 func (m mockPrometheusAPI) Targets(ctx context.Context) (prometheusv1.TargetsResult, error) {
 	panic("not implemented")
 }
 
-func (m mockPrometheusAPI) Query(ctx context.Context, query string, ts time.Time) (prommodel.Value, error) {
+func (m mockPrometheusAPI) TargetsMetadata(ctx context.Context, _, _, _ string) ([]prometheusv1.MetricMetadata, error) {
+	panic("not implemented")
+}
+
+func (m mockPrometheusAPI) Query(ctx context.Context, query string, ts time.Time) (prommodel.Value, api.Warnings, error) {
 	args := m.Called(ctx, query, ts)
 	var returnArg prommodel.Value
 	if args.Get(0) != nil {
 		returnArg = args.Get(0).(prommodel.Value)
 	}
-	return returnArg, args.Error(1)
+	return returnArg, nil, args.Error(1)
 }
 
-func (m mockPrometheusAPI) QueryRange(ctx context.Context, query string, r prometheusv1.Range) (prommodel.Value, error) {
+func (m mockPrometheusAPI) QueryRange(ctx context.Context, query string, r prometheusv1.Range) (prommodel.Value, api.Warnings, error) {
 	args := m.Called(ctx, query, r)
 	var returnArg prommodel.Value
 	if args.Get(0) != nil {
 		returnArg = args.Get(0).(prommodel.Value)
 	}
-	return returnArg, args.Error(1)
+	return returnArg, nil, args.Error(1)
 }
 
 func TestGetEmptyClusterHistory(t *testing.T) {
 	mockClient := mockPrometheusAPI{}
 	historyProvider := prometheusHistoryProvider{
 		config:           getDefaultPrometheusHistoryProviderConfigForTest(),
-		prometheusClient: &mockClient}
+		prometheusClient: &mockClient,
+	}
 	mockClient.On("Query", mock.Anything, mock.AnythingOfType("string"), mock.AnythingOfType("time.Time")).Times(1).Return(
 		prommodel.Matrix{}, nil)
 	mockClient.On("QueryRange", mock.Anything, mock.AnythingOfType("string"), mock.AnythingOfType("v1.Range")).Return().Times(2).Return(
@@ -121,7 +149,8 @@ func TestPrometheusError(t *testing.T) {
 	mockClient := mockPrometheusAPI{}
 	historyProvider := prometheusHistoryProvider{
 		config:           getDefaultPrometheusHistoryProviderConfigForTest(),
-		prometheusClient: &mockClient}
+		prometheusClient: &mockClient,
+	}
 	mockClient.On("QueryRange", mock.Anything, mock.AnythingOfType("string"), mock.AnythingOfType("v1.Range")).Return().Times(2).Return(
 		nil, fmt.Errorf("bla"))
 	_, err := historyProvider.GetClusterHistory()
@@ -132,7 +161,8 @@ func TestGetCPUSamples(t *testing.T) {
 	mockClient := mockPrometheusAPI{}
 	historyProvider := prometheusHistoryProvider{
 		config:           getDefaultPrometheusHistoryProviderConfigForTest(),
-		prometheusClient: &mockClient}
+		prometheusClient: &mockClient,
+	}
 	mockClient.On("QueryRange", mock.Anything, cpuQuery, mock.AnythingOfType("v1.Range")).Return().Return(
 		prommodel.Matrix{
 			{
@@ -158,7 +188,9 @@ func TestGetCPUSamples(t *testing.T) {
 		Samples: map[string][]model.ContainerUsageSample{"container": {{
 			MeasureStart: time.Unix(1, 0),
 			Usage:        model.CPUAmountFromCores(5.5),
-			Resource:     model.ResourceCPU}}}}
+			Resource:     model.ResourceCPU,
+		}}},
+	}
 	histories, err := historyProvider.GetClusterHistory()
 	assert.Nil(t, err)
 	assert.Equal(t, histories, map[model.PodID]*PodHistory{podID: podHistory})
@@ -168,7 +200,8 @@ func TestGetMemorySamples(t *testing.T) {
 	mockClient := mockPrometheusAPI{}
 	historyProvider := prometheusHistoryProvider{
 		config:           getDefaultPrometheusHistoryProviderConfigForTest(),
-		prometheusClient: &mockClient}
+		prometheusClient: &mockClient,
+	}
 	mockClient.On("QueryRange", mock.Anything, cpuQuery, mock.AnythingOfType("v1.Range")).Return().Return(prommodel.Matrix{}, nil)
 	mockClient.On("QueryRange", mock.Anything, memoryQuery, mock.AnythingOfType("v1.Range")).Return().Return(
 		prommodel.Matrix{
@@ -193,7 +226,50 @@ func TestGetMemorySamples(t *testing.T) {
 		Samples: map[string][]model.ContainerUsageSample{"container": {{
 			MeasureStart: time.Unix(1, 0),
 			Usage:        model.MemoryAmountFromBytes(12345),
-			Resource:     model.ResourceMemory}}}}
+			Resource:     model.ResourceMemory,
+		}}},
+	}
+	histories, err := historyProvider.GetClusterHistory()
+	assert.Nil(t, err)
+	assert.Equal(t, histories, map[model.PodID]*PodHistory{podID: podHistory})
+}
+
+func TestGetNamespacedMemorySamples(t *testing.T) {
+	mockClient := mockPrometheusAPI{}
+	promConfig := getDefaultPrometheusHistoryProviderConfigForTest()
+	promConfig.Namespace = "kube-system"
+	historyProvider := prometheusHistoryProvider{
+		config:           promConfig,
+		prometheusClient: &mockClient,
+	}
+
+	mockClient.On("QueryRange", mock.Anything, cpuNamespacedQuery, mock.AnythingOfType("v1.Range")).Return().Return(prommodel.Matrix{}, nil)
+	mockClient.On("QueryRange", mock.Anything, memoryNamespacedQuery, mock.AnythingOfType("v1.Range")).Return().Return(
+		prommodel.Matrix{
+			{
+				Metric: map[prommodel.LabelName]prommodel.LabelValue{
+					"namespace": "kube-system",
+					"pod_name":  "pod",
+					"name":      "container",
+				},
+				Values: []prommodel.SamplePair{
+					{
+						Timestamp: prommodel.TimeFromUnix(1),
+						Value:     12345,
+					},
+				},
+			},
+		}, nil)
+	mockClient.On("Query", mock.Anything, labelsQuery, mock.AnythingOfType("time.Time")).Return(prommodel.Matrix{}, nil)
+	podID := model.PodID{Namespace: "kube-system", PodName: "pod"}
+	podHistory := &PodHistory{
+		LastLabels: map[string]string{},
+		Samples: map[string][]model.ContainerUsageSample{"container": {{
+			MeasureStart: time.Unix(1, 0),
+			Usage:        model.MemoryAmountFromBytes(12345),
+			Resource:     model.ResourceMemory,
+		}}},
+	}
 	histories, err := historyProvider.GetClusterHistory()
 	assert.Nil(t, err)
 	assert.Equal(t, histories, map[model.PodID]*PodHistory{podID: podHistory})
@@ -203,7 +279,8 @@ func TestGetLabels(t *testing.T) {
 	mockClient := mockPrometheusAPI{}
 	historyProvider := prometheusHistoryProvider{
 		config:           getDefaultPrometheusHistoryProviderConfigForTest(),
-		prometheusClient: &mockClient}
+		prometheusClient: &mockClient,
+	}
 	mockClient.On("QueryRange", mock.Anything, cpuQuery, mock.AnythingOfType("v1.Range")).Return().Return(prommodel.Matrix{}, nil)
 	mockClient.On("QueryRange", mock.Anything, memoryQuery, mock.AnythingOfType("v1.Range")).Return().Return(prommodel.Matrix{}, nil)
 	mockClient.On("Query", mock.Anything, labelsQuery, mock.AnythingOfType("time.Time")).Return(
@@ -239,7 +316,8 @@ func TestGetLabels(t *testing.T) {
 	podHistory := &PodHistory{
 		LastLabels: map[string]string{"x": "z"},
 		LastSeen:   time.Unix(20, 0),
-		Samples:    map[string][]model.ContainerUsageSample{}}
+		Samples:    map[string][]model.ContainerUsageSample{},
+	}
 	histories, err := historyProvider.GetClusterHistory()
 	assert.Nil(t, err)
 	assert.Equal(t, histories, map[model.PodID]*PodHistory{podID: podHistory})

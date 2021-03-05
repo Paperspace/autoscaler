@@ -19,11 +19,11 @@ package main
 import (
 	"flag"
 	"fmt"
-
 	"net/http"
 	"os"
 	"time"
 
+	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/common"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/logic"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/pod"
@@ -39,7 +39,6 @@ import (
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
 	"k8s.io/client-go/informers"
 	kube_client "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	kube_flag "k8s.io/component-base/cli/flag"
 	"k8s.io/klog"
 )
@@ -56,14 +55,19 @@ var (
 		tlsPrivateKey: flag.String("tls-private-key", "/etc/tls-certs/serverKey.pem", "Path to server certificate key PEM file."),
 	}
 
-	port            = flag.Int("port", 8000, "The port to listen on.")
-	address         = flag.String("address", ":8944", "The address to expose Prometheus metrics.")
-	namespace       = os.Getenv("NAMESPACE")
-	serviceName     = flag.String("webhook-service", "vpa-webhook", "Kubernetes service under which webhook is registered. Used when registerByURL is set to false.")
-	webhookAddress  = flag.String("webhook-address", "", "Address under which webhook is registered. Used when registerByURL is set to true.")
-	webhookPort     = flag.String("webhook-port", "", "Server Port for Webhook")
-	registerWebhook = flag.Bool("register-webhook", true, "If set to true, admission webhook object will be created on start up to register with the API server.")
-	registerByURL   = flag.Bool("register-by-url", false, "If set to true, admission webhook will be registered by URL (webhookAddress:webhookPort) instead of by service name")
+	port               = flag.Int("port", 8000, "The port to listen on.")
+	address            = flag.String("address", ":8944", "The address to expose Prometheus metrics.")
+	kubeconfig         = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
+	kubeApiQps         = flag.Float64("kube-api-qps", 5.0, `QPS limit when making requests to Kubernetes apiserver`)
+	kubeApiBurst       = flag.Float64("kube-api-burst", 10.0, `QPS burst limit when making requests to Kubernetes apiserver`)
+	namespace          = os.Getenv("NAMESPACE")
+	serviceName        = flag.String("webhook-service", "vpa-webhook", "Kubernetes service under which webhook is registered. Used when registerByURL is set to false.")
+	webhookAddress     = flag.String("webhook-address", "", "Address under which webhook is registered. Used when registerByURL is set to true.")
+	webhookPort        = flag.String("webhook-port", "", "Server Port for Webhook")
+	webhookTimeout     = flag.Int("webhook-timeout-seconds", 30, "Timeout in seconds that the API server should wait for this webhook to respond before failing.")
+	registerWebhook    = flag.Bool("register-webhook", true, "If set to true, admission webhook object will be created on start up to register with the API server.")
+	registerByURL      = flag.Bool("register-by-url", false, "If set to true, admission webhook will be registered by URL (webhookAddress:webhookPort) instead of by service name")
+	vpaObjectNamespace = flag.String("vpa-object-namespace", apiv1.NamespaceAll, "Namespace to search for VPA objects. Empty means all namespaces will be used.")
 )
 
 func main() {
@@ -76,21 +80,17 @@ func main() {
 	metrics_admission.Register()
 
 	certs := initCerts(*certsConfiguration)
-
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		klog.Fatal(err)
-	}
+	config := common.CreateKubeConfigOrDie(*kubeconfig, float32(*kubeApiQps), int(*kubeApiBurst))
 
 	vpaClient := vpa_clientset.NewForConfigOrDie(config)
-	vpaLister := vpa_api_util.NewAllVpasLister(vpaClient, make(chan struct{}))
+	vpaLister := vpa_api_util.NewVpasLister(vpaClient, make(chan struct{}), *vpaObjectNamespace)
 	kubeClient := kube_client.NewForConfigOrDie(config)
 	factory := informers.NewSharedInformerFactory(kubeClient, defaultResyncPeriod)
 	targetSelectorFetcher := target.NewVpaTargetSelectorFetcher(config, kubeClient, factory)
 	podPreprocessor := pod.NewDefaultPreProcessor()
 	vpaPreprocessor := vpa.NewDefaultPreProcessor()
 	var limitRangeCalculator limitrange.LimitRangeCalculator
-	limitRangeCalculator, err = limitrange.NewLimitsRangeCalculator(factory)
+	limitRangeCalculator, err := limitrange.NewLimitsRangeCalculator(factory)
 	if err != nil {
 		klog.Errorf("Failed to create limitRangeCalculator, falling back to not checking limits. Error message: %s", err)
 		limitRangeCalculator = limitrange.NewNoopLimitsCalculator()
@@ -102,11 +102,16 @@ func main() {
 	if err != nil {
 		klog.Fatalf("Unable to get hostname: %v", err)
 	}
+
+	statusNamespace := status.AdmissionControllerStatusNamespace
+	if namespace != "" {
+		statusNamespace = namespace
+	}
 	stopCh := make(chan struct{})
 	statusUpdater := status.NewUpdater(
 		kubeClient,
 		status.AdmissionControllerStatusName,
-		status.AdmissionControllerStatusNamespace,
+		statusNamespace,
 		statusUpdateInterval,
 		hostname,
 	)
@@ -126,7 +131,7 @@ func main() {
 	url := fmt.Sprintf("%v:%v", *webhookAddress, *webhookPort)
 	go func() {
 		if *registerWebhook {
-			selfRegistration(clientset, certs.caCert, namespace, *serviceName, url, *registerByURL)
+			selfRegistration(clientset, certs.caCert, namespace, *serviceName, url, *registerByURL, int32(*webhookTimeout))
 		}
 		// Start status updates after the webhook is initialized.
 		statusUpdater.Run(stopCh)

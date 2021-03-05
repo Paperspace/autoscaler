@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 )
 
@@ -31,13 +32,9 @@ func TestProviderConstructorProperties(t *testing.T) {
 	controller, stop := mustCreateTestController(t)
 	defer stop()
 
-	provider, err := newProvider(ProviderName, &resourceLimits, controller)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if actual := provider.Name(); actual != ProviderName {
-		t.Errorf("expected %q, got %q", ProviderName, actual)
+	provider := newProvider(cloudprovider.ClusterAPIProiverName, &resourceLimits, controller)
+	if actual := provider.Name(); actual != cloudprovider.ClusterAPIProiverName {
+		t.Errorf("expected %q, got %q", cloudprovider.ClusterAPIProiverName, actual)
 	}
 
 	rl, err := provider.GetResourceLimiter()

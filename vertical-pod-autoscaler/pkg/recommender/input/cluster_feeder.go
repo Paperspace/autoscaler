@@ -17,6 +17,7 @@ limitations under the License.
 package input
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	vpa_clientset "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
@@ -49,7 +51,13 @@ import (
 )
 
 const (
-	defaultResyncPeriod time.Duration = 10 * time.Minute
+	evictionWatchRetryWait                     = 10 * time.Second
+	evictionWatchJitterFactor                  = 0.5
+	scaleCacheLoopPeriod         time.Duration = 7 * time.Second
+	scaleCacheEntryLifetime      time.Duration = time.Hour
+	scaleCacheEntryFreshnessTime time.Duration = 10 * time.Minute
+	scaleCacheEntryJitterFactor  float64       = 1.
+	defaultResyncPeriod          time.Duration = 10 * time.Minute
 )
 
 // ClusterStateFeeder can update state of ClusterState object.
@@ -105,18 +113,19 @@ func (m ClusterStateFeederFactory) Make() *clusterStateFeeder {
 
 // NewClusterStateFeeder creates new ClusterStateFeeder with internal data providers, based on kube client config.
 // Deprecated; Use ClusterStateFeederFactory instead.
-func NewClusterStateFeeder(config *rest.Config, clusterState *model.ClusterState, memorySave bool) ClusterStateFeeder {
+func NewClusterStateFeeder(config *rest.Config, clusterState *model.ClusterState, memorySave bool, namespace string) ClusterStateFeeder {
 	kubeClient := kube_client.NewForConfigOrDie(config)
-	podLister, oomObserver := NewPodListerAndOOMObserver(kubeClient)
-	factory := informers.NewSharedInformerFactory(kubeClient, defaultResyncPeriod)
-	controllerFetcher := controllerfetcher.NewControllerFetcher(config, kubeClient, factory)
+	podLister, oomObserver := NewPodListerAndOOMObserver(kubeClient, namespace)
+	factory := informers.NewSharedInformerFactoryWithOptions(kubeClient, defaultResyncPeriod, informers.WithNamespace(namespace))
+	controllerFetcher := controllerfetcher.NewControllerFetcher(config, kubeClient, factory, scaleCacheEntryFreshnessTime, scaleCacheEntryLifetime, scaleCacheEntryJitterFactor)
+	controllerFetcher.Start(context.TODO(), scaleCacheLoopPeriod)
 	return ClusterStateFeederFactory{
 		PodLister:           podLister,
 		OOMObserver:         oomObserver,
 		KubeClient:          kubeClient,
-		MetricsClient:       newMetricsClient(config),
+		MetricsClient:       newMetricsClient(config, namespace),
 		VpaCheckpointClient: vpa_clientset.NewForConfigOrDie(config).AutoscalingV1(),
-		VpaLister:           vpa_api_util.NewAllVpasLister(vpa_clientset.NewForConfigOrDie(config), make(chan struct{})),
+		VpaLister:           vpa_api_util.NewVpasLister(vpa_clientset.NewForConfigOrDie(config), make(chan struct{}), namespace),
 		ClusterState:        clusterState,
 		SelectorFetcher:     target.NewVpaTargetSelectorFetcher(config, kubeClient, factory),
 		MemorySaveMode:      memorySave,
@@ -124,25 +133,32 @@ func NewClusterStateFeeder(config *rest.Config, clusterState *model.ClusterState
 	}.Make()
 }
 
-func newMetricsClient(config *rest.Config) metrics.MetricsClient {
+func newMetricsClient(config *rest.Config, namespace string) metrics.MetricsClient {
 	metricsGetter := resourceclient.NewForConfigOrDie(config)
-	return metrics.NewMetricsClient(metricsGetter)
+	return metrics.NewMetricsClient(metricsGetter, namespace)
 }
 
 // WatchEvictionEventsWithRetries watches new Events with reason=Evicted and passes them to the observer.
-func WatchEvictionEventsWithRetries(kubeClient kube_client.Interface, observer oom.Observer) {
+func WatchEvictionEventsWithRetries(kubeClient kube_client.Interface, observer oom.Observer, namespace string) {
 	go func() {
 		options := metav1.ListOptions{
 			FieldSelector: "reason=Evicted",
 		}
 
-		for {
-			watchInterface, err := kubeClient.CoreV1().Events("").Watch(options)
+		watchEvictionEventsOnce := func() {
+			watchInterface, err := kubeClient.CoreV1().Events(namespace).Watch(context.TODO(), options)
 			if err != nil {
 				klog.Errorf("Cannot initialize watching events. Reason %v", err)
-				continue
+				return
 			}
 			watchEvictionEvents(watchInterface.ResultChan(), observer)
+		}
+		for {
+			watchEvictionEventsOnce()
+			// Wait between attempts, retrying too often breaks API server.
+			waitTime := wait.Jitter(evictionWatchRetryWait, evictionWatchJitterFactor)
+			klog.V(1).Infof("An attempt to watch eviction events finished. Waiting %v before the next one.", waitTime)
+			time.Sleep(waitTime)
 		}
 	}()
 }
@@ -165,9 +181,16 @@ func watchEvictionEvents(evictedEventChan <-chan watch.Event, observer oom.Obser
 }
 
 // Creates clients watching pods: PodLister (listing only not terminated pods).
-func newPodClients(kubeClient kube_client.Interface, resourceEventHandler cache.ResourceEventHandler) v1lister.PodLister {
+func newPodClients(kubeClient kube_client.Interface, resourceEventHandler cache.ResourceEventHandler, namespace string) v1lister.PodLister {
+	// We are interested in pods which are Running or Unknown (in case the pod is
+	// running but there are some transient errors we don't want to delete it from
+	// our model).
+	// We don't want to watch Pending pods because they didn't generate any usage
+	// yet.
+	// Succeeded and Failed failed pods don't generate any usage anymore but we
+	// don't necessarily want to immediately delete them.
 	selector := fields.ParseSelectorOrDie("status.phase!=" + string(apiv1.PodPending))
-	podListWatch := cache.NewListWatchFromClient(kubeClient.CoreV1().RESTClient(), "pods", apiv1.NamespaceAll, selector)
+	podListWatch := cache.NewListWatchFromClient(kubeClient.CoreV1().RESTClient(), "pods", namespace, selector)
 	indexer, controller := cache.NewIndexerInformer(
 		podListWatch,
 		&apiv1.Pod{},
@@ -182,10 +205,10 @@ func newPodClients(kubeClient kube_client.Interface, resourceEventHandler cache.
 }
 
 // NewPodListerAndOOMObserver creates pair of pod lister and OOM observer.
-func NewPodListerAndOOMObserver(kubeClient kube_client.Interface) (v1lister.PodLister, oom.Observer) {
+func NewPodListerAndOOMObserver(kubeClient kube_client.Interface, namespace string) (v1lister.PodLister, oom.Observer) {
 	oomObserver := oom.NewObserver()
-	podLister := newPodClients(kubeClient, oomObserver)
-	WatchEvictionEventsWithRetries(kubeClient, oomObserver)
+	podLister := newPodClients(kubeClient, oomObserver, namespace)
+	WatchEvictionEventsWithRetries(kubeClient, oomObserver, namespace)
 	return podLister, oomObserver
 }
 
@@ -214,13 +237,15 @@ func (feeder *clusterStateFeeder) InitFromHistoryProvider(historyProvider histor
 		for containerName, sampleList := range podHistory.Samples {
 			containerID := model.ContainerID{
 				PodID:         podID,
-				ContainerName: containerName}
+				ContainerName: containerName,
+			}
 			klog.V(4).Infof("Adding %d samples for container %v", len(sampleList), containerID)
 			for _, sample := range sampleList {
 				if err := feeder.clusterState.AddSample(
 					&model.ContainerUsageSampleWithKey{
 						ContainerUsageSample: sample,
-						Container:            containerID}); err != nil {
+						Container:            containerID,
+					}); err != nil {
 					klog.Warningf("Error adding metric sample for container %v: %v", containerID, err)
 				}
 			}
@@ -255,8 +280,7 @@ func (feeder *clusterStateFeeder) InitFromCheckpoints() {
 
 	for namespace := range namespaces {
 		klog.V(3).Infof("Fetching checkpoints from namespace %s", namespace)
-		checkpointList, err := feeder.vpaCheckpointClient.VerticalPodAutoscalerCheckpoints(namespace).List(metav1.ListOptions{})
-
+		checkpointList, err := feeder.vpaCheckpointClient.VerticalPodAutoscalerCheckpoints(namespace).List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
 			klog.Errorf("Cannot list VPA checkpoints from namespace %v. Reason: %+v", namespace, err)
 		}
@@ -276,7 +300,7 @@ func (feeder *clusterStateFeeder) GarbageCollectCheckpoints() {
 	klog.V(3).Info("Starting garbage collection of checkpoints")
 	feeder.LoadVPAs()
 
-	namspaceList, err := feeder.coreClient.Namespaces().List(metav1.ListOptions{})
+	namspaceList, err := feeder.coreClient.Namespaces().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		klog.Errorf("Cannot list namespaces. Reason: %+v", err)
 		return
@@ -284,7 +308,7 @@ func (feeder *clusterStateFeeder) GarbageCollectCheckpoints() {
 
 	for _, namespaceItem := range namspaceList.Items {
 		namespace := namespaceItem.Name
-		checkpointList, err := feeder.vpaCheckpointClient.VerticalPodAutoscalerCheckpoints(namespace).List(metav1.ListOptions{})
+		checkpointList, err := feeder.vpaCheckpointClient.VerticalPodAutoscalerCheckpoints(namespace).List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
 			klog.Errorf("Cannot list VPA checkpoints from namespace %v. Reason: %+v", namespace, err)
 		}
@@ -292,7 +316,7 @@ func (feeder *clusterStateFeeder) GarbageCollectCheckpoints() {
 			vpaID := model.VpaID{Namespace: checkpoint.Namespace, VpaName: checkpoint.Spec.VPAObjectName}
 			_, exists := feeder.clusterState.Vpas[vpaID]
 			if !exists {
-				err = feeder.vpaCheckpointClient.VerticalPodAutoscalerCheckpoints(namespace).Delete(checkpoint.Name, &metav1.DeleteOptions{})
+				err = feeder.vpaCheckpointClient.VerticalPodAutoscalerCheckpoints(namespace).Delete(context.TODO(), checkpoint.Name, metav1.DeleteOptions{})
 				if err == nil {
 					klog.V(3).Infof("Orphaned VPA checkpoint cleanup - deleting %v/%v.", namespace, checkpoint.Name)
 				} else {
@@ -317,7 +341,8 @@ func (feeder *clusterStateFeeder) LoadVPAs() {
 	for _, vpaCRD := range vpaCRDs {
 		vpaID := model.VpaID{
 			Namespace: vpaCRD.Namespace,
-			VpaName:   vpaCRD.Name}
+			VpaName:   vpaCRD.Name,
+		}
 
 		selector, conditions := feeder.getSelector(vpaCRD)
 		klog.Infof("Using selector %s for VPA %s/%s", selector.String(), vpaCRD.Namespace, vpaCRD.Name)

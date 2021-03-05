@@ -19,10 +19,11 @@ package history
 import (
 	"context"
 	"fmt"
-	"k8s.io/klog"
 	"sort"
 	"strings"
 	"time"
+
+	"k8s.io/klog"
 
 	promapi "github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -41,6 +42,7 @@ type PrometheusHistoryProviderConfig struct {
 	PodNamespaceLabel, PodNameLabel                  string
 	CtrNamespaceLabel, CtrPodNameLabel, CtrNameLabel string
 	CadvisorMetricsJobName                           string
+	Namespace                                        string
 }
 
 // PodHistory represents history of usage and labels for a given pod.
@@ -118,8 +120,10 @@ func (p *prometheusHistoryProvider) getContainerIDFromLabels(metric prommodel.Me
 	return &model.ContainerID{
 		PodID: model.PodID{
 			Namespace: namespace,
-			PodName:   podName},
-		ContainerName: containerName}, nil
+			PodName:   podName,
+		},
+		ContainerName: containerName,
+	}, nil
 }
 
 func (p *prometheusHistoryProvider) getPodIDFromLabels(metric prommodel.Metric) (*model.PodID, error) {
@@ -172,7 +176,8 @@ func getContainerUsageSamplesFromSamples(samples []prommodel.SamplePair, resourc
 		res = append(res, model.ContainerUsageSample{
 			MeasureStart: sample.Timestamp.Time(),
 			Usage:        resourceAmountFromValue(float64(sample.Value), resource),
-			Resource:     resource})
+			Resource:     resource,
+		})
 	}
 	return res
 }
@@ -184,12 +189,11 @@ func (p *prometheusHistoryProvider) readResourceHistory(res map[model.PodID]*Pod
 	ctx, cancel := context.WithTimeout(context.Background(), p.queryTimeout)
 	defer cancel()
 
-	result, err := p.prometheusClient.QueryRange(ctx, query, prometheusv1.Range{
+	result, _, err := p.prometheusClient.QueryRange(ctx, query, prometheusv1.Range{
 		Start: start,
 		End:   end,
 		Step:  time.Duration(p.historyResolution),
 	})
-
 	if err != nil {
 		return fmt.Errorf("cannot get timeseries for %v: %v", resource, err)
 	}
@@ -222,7 +226,7 @@ func (p *prometheusHistoryProvider) readLastLabels(res map[model.PodID]*PodHisto
 	ctx, cancel := context.WithTimeout(context.Background(), p.queryTimeout)
 	defer cancel()
 
-	result, err := p.prometheusClient.Query(ctx, query, time.Now())
+	result, _, err := p.prometheusClient.Query(ctx, query, time.Now())
 	if err != nil {
 		return fmt.Errorf("cannot get timeseries for labels: %v", err)
 	}
@@ -264,6 +268,9 @@ func (p *prometheusHistoryProvider) GetClusterHistory() (map[model.PodID]*PodHis
 	podSelector = podSelector + fmt.Sprintf("%s=~\".+\", %s!=\"POD\", %s!=\"\"",
 		p.config.CtrPodNameLabel, p.config.CtrNameLabel, p.config.CtrNameLabel)
 
+	if p.config.Namespace != "" {
+		podSelector = fmt.Sprintf("%s, %s=\"%s\"", podSelector, p.config.CtrNamespaceLabel, p.config.Namespace)
+	}
 	historicalCpuQuery := fmt.Sprintf("rate(container_cpu_usage_seconds_total{%s}[%s])", podSelector, p.config.HistoryResolution)
 	klog.V(4).Infof("Historical CPU usage query used: %s", historicalCpuQuery)
 	err := p.readResourceHistory(res, historicalCpuQuery, model.ResourceCPU)

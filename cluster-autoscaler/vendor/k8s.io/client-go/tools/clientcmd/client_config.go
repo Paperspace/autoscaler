@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode"
 
 	restclient "k8s.io/client-go/rest"
 	clientauth "k8s.io/client-go/tools/auth"
@@ -31,6 +32,11 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/imdario/mergo"
+)
+
+const (
+	// clusterExtensionKey is reserved in the cluster extensions list for exec plugin config.
+	clusterExtensionKey = "client.authentication.k8s.io/exec"
 )
 
 var (
@@ -71,7 +77,7 @@ type PersistAuthProviderConfigForUser func(user string) restclient.AuthProviderC
 
 type promptedCredentials struct {
 	username string
-	password string
+	password string `datapolicy:"password"`
 }
 
 // DirectClientConfig is a ClientConfig interface that is backed by a clientcmdapi.Config, options overrides, and an optional fallbackReader for auth information
@@ -188,17 +194,17 @@ func (config *DirectClientConfig) ClientConfig() (*restclient.Config, error) {
 			authInfoName, _ := config.getAuthInfoName()
 			persister = PersisterForUser(config.configAccess, authInfoName)
 		}
-		userAuthPartialConfig, err := config.getUserIdentificationPartialConfig(configAuthInfo, config.fallbackReader, persister)
+		userAuthPartialConfig, err := config.getUserIdentificationPartialConfig(configAuthInfo, config.fallbackReader, persister, configClusterInfo)
 		if err != nil {
 			return nil, err
 		}
-		mergo.MergeWithOverwrite(clientConfig, userAuthPartialConfig)
+		mergo.Merge(clientConfig, userAuthPartialConfig, mergo.WithOverride)
 
 		serverAuthPartialConfig, err := getServerIdentificationPartialConfig(configAuthInfo, configClusterInfo)
 		if err != nil {
 			return nil, err
 		}
-		mergo.MergeWithOverwrite(clientConfig, serverAuthPartialConfig)
+		mergo.Merge(clientConfig, serverAuthPartialConfig, mergo.WithOverride)
 	}
 
 	return clientConfig, nil
@@ -219,7 +225,7 @@ func getServerIdentificationPartialConfig(configAuthInfo clientcmdapi.AuthInfo, 
 	configClientConfig.CAData = configClusterInfo.CertificateAuthorityData
 	configClientConfig.Insecure = configClusterInfo.InsecureSkipTLSVerify
 	configClientConfig.ServerName = configClusterInfo.TLSServerName
-	mergo.MergeWithOverwrite(mergedConfig, configClientConfig)
+	mergo.Merge(mergedConfig, configClientConfig, mergo.WithOverride)
 
 	return mergedConfig, nil
 }
@@ -231,7 +237,7 @@ func getServerIdentificationPartialConfig(configAuthInfo clientcmdapi.AuthInfo, 
 // 2.  configAuthInfo.auth-path (this file can contain information that conflicts with #1, and we want #1 to win the priority)
 // 3.  if there is not enough information to identify the user, load try the ~/.kubernetes_auth file
 // 4.  if there is not enough information to identify the user, prompt if possible
-func (config *DirectClientConfig) getUserIdentificationPartialConfig(configAuthInfo clientcmdapi.AuthInfo, fallbackReader io.Reader, persistAuthConfig restclient.AuthProviderConfigPersister) (*restclient.Config, error) {
+func (config *DirectClientConfig) getUserIdentificationPartialConfig(configAuthInfo clientcmdapi.AuthInfo, fallbackReader io.Reader, persistAuthConfig restclient.AuthProviderConfigPersister, configClusterInfo clientcmdapi.Cluster) (*restclient.Config, error) {
 	mergedConfig := &restclient.Config{}
 
 	// blindly overwrite existing values based on precedence
@@ -269,6 +275,8 @@ func (config *DirectClientConfig) getUserIdentificationPartialConfig(configAuthI
 	}
 	if configAuthInfo.Exec != nil {
 		mergedConfig.ExecProvider = configAuthInfo.Exec
+		mergedConfig.ExecProvider.InstallHint = cleanANSIEscapeCodes(mergedConfig.ExecProvider.InstallHint)
+		mergedConfig.ExecProvider.Config = configClusterInfo.Extensions[clusterExtensionKey]
 	}
 
 	// if there still isn't enough information to authenticate the user, try prompting
@@ -286,8 +294,8 @@ func (config *DirectClientConfig) getUserIdentificationPartialConfig(configAuthI
 		promptedConfig := makeUserIdentificationConfig(*promptedAuthInfo)
 		previouslyMergedConfig := mergedConfig
 		mergedConfig = &restclient.Config{}
-		mergo.MergeWithOverwrite(mergedConfig, promptedConfig)
-		mergo.MergeWithOverwrite(mergedConfig, previouslyMergedConfig)
+		mergo.Merge(mergedConfig, promptedConfig, mergo.WithOverride)
+		mergo.Merge(mergedConfig, previouslyMergedConfig, mergo.WithOverride)
 		config.promptedCredentials.username = mergedConfig.Username
 		config.promptedCredentials.password = mergedConfig.Password
 	}
@@ -312,6 +320,41 @@ func canIdentifyUser(config restclient.Config) bool {
 		len(config.BearerToken) > 0 ||
 		config.AuthProvider != nil ||
 		config.ExecProvider != nil
+}
+
+// cleanANSIEscapeCodes takes an arbitrary string and ensures that there are no
+// ANSI escape sequences that could put the terminal in a weird state (e.g.,
+// "\e[1m" bolds text)
+func cleanANSIEscapeCodes(s string) string {
+	// spaceControlCharacters includes tab, new line, vertical tab, new page, and
+	// carriage return. These are in the unicode.Cc category, but that category also
+	// contains ESC (U+001B) which we don't want.
+	spaceControlCharacters := unicode.RangeTable{
+		R16: []unicode.Range16{
+			{Lo: 0x0009, Hi: 0x000D, Stride: 1},
+		},
+	}
+
+	// Why not make this deny-only (instead of allow-only)? Because unicode.C
+	// contains newline and tab characters that we want.
+	allowedRanges := []*unicode.RangeTable{
+		unicode.L,
+		unicode.M,
+		unicode.N,
+		unicode.P,
+		unicode.S,
+		unicode.Z,
+		&spaceControlCharacters,
+	}
+	builder := strings.Builder{}
+	for _, roon := range s {
+		if unicode.IsOneOf(allowedRanges, roon) {
+			builder.WriteRune(roon) // returns nil error, per go doc
+		} else {
+			fmt.Fprintf(&builder, "%U", roon)
+		}
+	}
+	return builder.String()
 }
 
 // Namespace implements ClientConfig
@@ -420,12 +463,12 @@ func (config *DirectClientConfig) getContext() (clientcmdapi.Context, error) {
 
 	mergedContext := clientcmdapi.NewContext()
 	if configContext, exists := contexts[contextName]; exists {
-		mergo.MergeWithOverwrite(mergedContext, configContext)
+		mergo.Merge(mergedContext, configContext, mergo.WithOverride)
 	} else if required {
 		return clientcmdapi.Context{}, fmt.Errorf("context %q does not exist", contextName)
 	}
 	if config.overrides != nil {
-		mergo.MergeWithOverwrite(mergedContext, config.overrides.Context)
+		mergo.Merge(mergedContext, config.overrides.Context, mergo.WithOverride)
 	}
 
 	return *mergedContext, nil
@@ -438,12 +481,12 @@ func (config *DirectClientConfig) getAuthInfo() (clientcmdapi.AuthInfo, error) {
 
 	mergedAuthInfo := clientcmdapi.NewAuthInfo()
 	if configAuthInfo, exists := authInfos[authInfoName]; exists {
-		mergo.MergeWithOverwrite(mergedAuthInfo, configAuthInfo)
+		mergo.Merge(mergedAuthInfo, configAuthInfo, mergo.WithOverride)
 	} else if required {
 		return clientcmdapi.AuthInfo{}, fmt.Errorf("auth info %q does not exist", authInfoName)
 	}
 	if config.overrides != nil {
-		mergo.MergeWithOverwrite(mergedAuthInfo, config.overrides.AuthInfo)
+		mergo.Merge(mergedAuthInfo, config.overrides.AuthInfo, mergo.WithOverride)
 	}
 
 	return *mergedAuthInfo, nil
@@ -456,15 +499,15 @@ func (config *DirectClientConfig) getCluster() (clientcmdapi.Cluster, error) {
 
 	mergedClusterInfo := clientcmdapi.NewCluster()
 	if config.overrides != nil {
-		mergo.MergeWithOverwrite(mergedClusterInfo, config.overrides.ClusterDefaults)
+		mergo.Merge(mergedClusterInfo, config.overrides.ClusterDefaults, mergo.WithOverride)
 	}
 	if configClusterInfo, exists := clusterInfos[clusterInfoName]; exists {
-		mergo.MergeWithOverwrite(mergedClusterInfo, configClusterInfo)
+		mergo.Merge(mergedClusterInfo, configClusterInfo, mergo.WithOverride)
 	} else if required {
 		return clientcmdapi.Cluster{}, fmt.Errorf("cluster %q does not exist", clusterInfoName)
 	}
 	if config.overrides != nil {
-		mergo.MergeWithOverwrite(mergedClusterInfo, config.overrides.ClusterInfo)
+		mergo.Merge(mergedClusterInfo, config.overrides.ClusterInfo, mergo.WithOverride)
 	}
 
 	// * An override of --insecure-skip-tls-verify=true and no accompanying CA/CA data should clear already-set CA/CA data
@@ -505,11 +548,12 @@ func (config *inClusterClientConfig) RawConfig() (clientcmdapi.Config, error) {
 }
 
 func (config *inClusterClientConfig) ClientConfig() (*restclient.Config, error) {
-	if config.inClusterConfigProvider == nil {
-		config.inClusterConfigProvider = restclient.InClusterConfig
+	inClusterConfigProvider := config.inClusterConfigProvider
+	if inClusterConfigProvider == nil {
+		inClusterConfigProvider = restclient.InClusterConfig
 	}
 
-	icc, err := config.inClusterConfigProvider()
+	icc, err := inClusterConfigProvider()
 	if err != nil {
 		return nil, err
 	}
@@ -529,7 +573,7 @@ func (config *inClusterClientConfig) ClientConfig() (*restclient.Config, error) 
 		}
 	}
 
-	return icc, err
+	return icc, nil
 }
 
 func (config *inClusterClientConfig) Namespace() (string, bool, error) {
@@ -568,7 +612,7 @@ func (config *inClusterClientConfig) Possible() bool {
 // to the default config.
 func BuildConfigFromFlags(masterUrl, kubeconfigPath string) (*restclient.Config, error) {
 	if kubeconfigPath == "" && masterUrl == "" {
-		klog.Warningf("Neither --kubeconfig nor --master was specified.  Using the inClusterConfig.  This might not work.")
+		klog.Warning("Neither --kubeconfig nor --master was specified.  Using the inClusterConfig.  This might not work.")
 		kubeconfig, err := restclient.InClusterConfig()
 		if err == nil {
 			return kubeconfig, nil

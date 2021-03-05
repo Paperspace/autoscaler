@@ -19,6 +19,7 @@ import (
 	"time"
 
 	info "github.com/google/cadvisor/info/v1"
+	v2 "github.com/google/cadvisor/info/v2"
 )
 
 type testSubcontainersInfoProvider struct{}
@@ -264,9 +265,9 @@ func (p testSubcontainersInfoProvider) GetMachineInfo() (*info.MachineInfo, erro
 	}, nil
 }
 
-func (p testSubcontainersInfoProvider) SubcontainersInfo(string, *info.ContainerInfoRequest) ([]*info.ContainerInfo, error) {
-	return []*info.ContainerInfo{
-		{
+func (p testSubcontainersInfoProvider) GetRequestedContainersInfo(string, v2.RequestOptions) (map[string]*info.ContainerInfo, error) {
+	return map[string]*info.ContainerInfo{
+		"testcontainer": {
 			ContainerReference: info.ContainerReference{
 				Name:    "testcontainer",
 				Aliases: []string{"testcontaineralias"},
@@ -326,10 +327,20 @@ func (p testSubcontainersInfoProvider) SubcontainersInfo(string, *info.Container
 						ContainerData: info.MemoryStatsMemoryData{
 							Pgfault:    10,
 							Pgmajfault: 11,
+							NumaStats: info.MemoryNumaStats{
+								File:        map[uint8]uint64{0: 16649, 1: 10000},
+								Anon:        map[uint8]uint64{0: 10000, 1: 7109},
+								Unevictable: map[uint8]uint64{0: 8900, 1: 10000},
+							},
 						},
 						HierarchicalData: info.MemoryStatsMemoryData{
 							Pgfault:    12,
 							Pgmajfault: 13,
+							NumaStats: info.MemoryNumaStats{
+								File:        map[uint8]uint64{0: 36649, 1: 10000},
+								Anon:        map[uint8]uint64{0: 20000, 1: 7109},
+								Unevictable: map[uint8]uint64{0: 8900, 1: 20000},
+							},
 						},
 						Cache:      14,
 						RSS:        15,
@@ -624,44 +635,56 @@ func (p testSubcontainersInfoProvider) SubcontainersInfo(string, *info.Container
 					},
 					PerfStats: []info.PerfStat{
 						{
-							ScalingRatio: 1.0,
-							Value:        123,
-							Name:         "instructions",
-							Cpu:          0,
+							PerfValue: info.PerfValue{
+								ScalingRatio: 1.0,
+								Value:        123,
+								Name:         "instructions",
+							},
+							Cpu: 0,
 						},
 						{
-							ScalingRatio: 0.5,
-							Value:        456,
-							Name:         "instructions",
-							Cpu:          1,
+							PerfValue: info.PerfValue{
+								ScalingRatio: 0.5,
+								Value:        456,
+								Name:         "instructions",
+							},
+							Cpu: 1,
 						},
 						{
-							ScalingRatio: 0.66666666666,
-							Value:        321,
-							Name:         "instructions_retired",
-							Cpu:          0,
+							PerfValue: info.PerfValue{
+								ScalingRatio: 0.66666666666,
+								Value:        321,
+								Name:         "instructions_retired",
+							},
+							Cpu: 0,
 						},
 						{
-							ScalingRatio: 0.33333333333,
-							Value:        789,
-							Name:         "instructions_retired",
-							Cpu:          1,
+							PerfValue: info.PerfValue{
+								ScalingRatio: 0.33333333333,
+								Value:        789,
+								Name:         "instructions_retired",
+							},
+							Cpu: 1,
 						},
 					},
 					PerfUncoreStats: []info.PerfUncoreStat{
 						{
-							ScalingRatio: 1.0,
-							Value:        1231231512.0,
-							Name:         "cas_count_read",
-							Socket:       0,
-							PMU:          "uncore_imc_0",
+							PerfValue: info.PerfValue{
+								ScalingRatio: 1.0,
+								Value:        1231231512.0,
+								Name:         "cas_count_read",
+							},
+							Socket: 0,
+							PMU:    "uncore_imc_0",
 						},
 						{
-							ScalingRatio: 1.0,
-							Value:        1111231331.0,
-							Name:         "cas_count_read",
-							Socket:       1,
-							PMU:          "uncore_imc_0",
+							PerfValue: info.PerfValue{
+								ScalingRatio: 1.0,
+								Value:        1111231331.0,
+								Name:         "cas_count_read",
+							},
+							Socket: 1,
+							PMU:    "uncore_imc_0",
 						},
 					},
 					ReferencedMemory: 1234,
@@ -710,10 +733,10 @@ func (p *erroringSubcontainersInfoProvider) GetMachineInfo() (*info.MachineInfo,
 	return p.successfulProvider.GetMachineInfo()
 }
 
-func (p *erroringSubcontainersInfoProvider) SubcontainersInfo(
-	a string, r *info.ContainerInfoRequest) ([]*info.ContainerInfo, error) {
+func (p *erroringSubcontainersInfoProvider) GetRequestedContainersInfo(
+	a string, opt v2.RequestOptions) (map[string]*info.ContainerInfo, error) {
 	if p.shouldFail {
-		return []*info.ContainerInfo{}, errors.New("Oops 3")
+		return map[string]*info.ContainerInfo{}, errors.New("Oops 3")
 	}
-	return p.successfulProvider.SubcontainersInfo(a, r)
+	return p.successfulProvider.GetRequestedContainersInfo(a, opt)
 }

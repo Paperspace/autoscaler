@@ -18,7 +18,6 @@ package manager
 import (
 	"flag"
 	"fmt"
-	"github.com/opencontainers/runc/libcontainer/cgroups/fs2"
 	"net/http"
 	"os"
 	"path"
@@ -48,6 +47,7 @@ import (
 	"github.com/google/cadvisor/watcher"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs2"
 	"github.com/opencontainers/runc/libcontainer/intelrdt"
 
 	"k8s.io/klog/v2"
@@ -212,7 +212,7 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, houskeepingConfig
 	newManager.machineInfo = *machineInfo
 	klog.V(1).Infof("Machine: %+v", newManager.machineInfo)
 
-	newManager.perfManager, err = perf.NewManager(perfEventsFile, machineInfo.NumCores, machineInfo.Topology)
+	newManager.perfManager, err = perf.NewManager(perfEventsFile, machineInfo.Topology)
 	if err != nil {
 		return nil, err
 	}
@@ -932,7 +932,7 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 		perfCgroupPath := path.Join(fs2.UnifiedMountpoint, containerName)
 		cont.perfCollector, err = m.perfManager.GetCollector(perfCgroupPath)
 		if err != nil {
-			klog.Infof("perf_event metrics will not be available for container %s: %s", containerName, err)
+			klog.Errorf("Perf event metrics will not be available for container %q: %v", containerName, err)
 		}
 	} else {
 		devicesCgroupPath, err := handler.GetCgroupPath("devices")
@@ -950,18 +950,20 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 		} else {
 			cont.perfCollector, err = m.perfManager.GetCollector(perfCgroupPath)
 			if err != nil {
-				klog.Infof("perf_event metrics will not be available for container %s: %s", containerName, err)
+				klog.Errorf("Perf event metrics will not be available for container %q: %v", containerName, err)
 			}
 		}
 	}
 
-	resctrlPath, err := intelrdt.GetIntelRdtPath(containerName)
-	if err != nil {
-		klog.Warningf("Error getting resctrl path: %q", err)
-	} else {
-		cont.resctrlCollector, err = m.resctrlManager.GetCollector(resctrlPath)
+	if m.includedMetrics.Has(container.ResctrlMetrics) {
+		resctrlPath, err := intelrdt.GetIntelRdtPath(containerName)
 		if err != nil {
-			klog.Infof("resctrl metrics will not be available for container %s: %s", cont.info.Name, err)
+			klog.V(4).Infof("Error getting resctrl path: %q", err)
+		} else {
+			cont.resctrlCollector, err = m.resctrlManager.GetCollector(resctrlPath)
+			if err != nil {
+				klog.V(4).Infof("resctrl metrics will not be available for container %s: %s", cont.info.Name, err)
+			}
 		}
 	}
 
@@ -1135,11 +1137,19 @@ func (m *manager) detectSubcontainers(containerName string) error {
 
 // Watches for new containers started in the system. Runs forever unless there is a setup error.
 func (m *manager) watchForNewContainers(quit chan error) error {
+	watched := make([]watcher.ContainerWatcher, 0)
 	for _, watcher := range m.containerWatchers {
 		err := watcher.Start(m.eventsChannel)
 		if err != nil {
+			for _, w := range watched {
+				stopErr := w.Stop()
+				if stopErr != nil {
+					klog.Warningf("Failed to stop wacher %v with error: %v", w, stopErr)
+				}
+			}
 			return err
 		}
+		watched = append(watched, watcher)
 	}
 
 	// There is a race between starting the watch and new container creation so we do a detection before we read new containers.

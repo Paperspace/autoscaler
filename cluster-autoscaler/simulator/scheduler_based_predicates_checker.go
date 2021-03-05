@@ -26,9 +26,9 @@ import (
 	v1listers "k8s.io/client-go/listers/core/v1"
 	klog "k8s.io/klog/v2"
 	scheduler_apis_config "k8s.io/kubernetes/pkg/scheduler/apis/config"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 	scheduler_plugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
 	schedulerframeworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 
 	// We need to import provider to initialize default scheduler.
 	"k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
@@ -41,6 +41,7 @@ type SchedulerBasedPredicateChecker struct {
 	delegatingSharedLister *DelegatingSchedulerSharedLister
 	nodeLister             v1listers.NodeLister
 	podLister              v1listers.PodLister
+	lastIndex              int
 }
 
 // NewSchedulerBasedPredicateChecker builds scheduler based PredicateChecker.
@@ -76,6 +77,13 @@ func NewSchedulerBasedPredicateChecker(kubeClient kube_client.Interface, stop <-
 
 // FitsAnyNode checks if the given pod can be placed on any of the given nodes.
 func (p *SchedulerBasedPredicateChecker) FitsAnyNode(clusterSnapshot ClusterSnapshot, pod *apiv1.Pod) (string, error) {
+	return p.FitsAnyNodeMatching(clusterSnapshot, pod, func(*schedulerframework.NodeInfo) bool {
+		return true
+	})
+}
+
+// FitsAnyNodeMatching checks if the given pod can be placed on any of the given nodes matching the provided function.
+func (p *SchedulerBasedPredicateChecker) FitsAnyNodeMatching(clusterSnapshot ClusterSnapshot, pod *apiv1.Pod, nodeMatches func(*schedulerframework.NodeInfo) bool) (string, error) {
 	if clusterSnapshot == nil {
 		return "", fmt.Errorf("ClusterSnapshot not provided")
 	}
@@ -99,7 +107,12 @@ func (p *SchedulerBasedPredicateChecker) FitsAnyNode(clusterSnapshot ClusterSnap
 		return "", fmt.Errorf("error running pre filter plugins for pod %s; %s", pod.Name, preFilterStatus.Message())
 	}
 
-	for _, nodeInfo := range nodeInfosList {
+	for i := range nodeInfosList {
+		nodeInfo := nodeInfosList[(p.lastIndex+i)%len(nodeInfosList)]
+		if !nodeMatches(nodeInfo) {
+			continue
+		}
+
 		// Be sure that the node is schedulable.
 		if nodeInfo.Node().Spec.Unschedulable {
 			continue
@@ -114,6 +127,7 @@ func (p *SchedulerBasedPredicateChecker) FitsAnyNode(clusterSnapshot ClusterSnap
 			}
 		}
 		if ok {
+			p.lastIndex = (p.lastIndex + i + 1) % len(nodeInfosList)
 			return nodeInfo.Node().Name, nil
 		}
 	}

@@ -28,6 +28,8 @@ import (
 	fakeadmissionregistrationv1 "k8s.io/client-go/kubernetes/typed/admissionregistration/v1/fake"
 	admissionregistrationv1beta1 "k8s.io/client-go/kubernetes/typed/admissionregistration/v1beta1"
 	fakeadmissionregistrationv1beta1 "k8s.io/client-go/kubernetes/typed/admissionregistration/v1beta1/fake"
+	internalv1alpha1 "k8s.io/client-go/kubernetes/typed/apiserverinternal/v1alpha1"
+	fakeinternalv1alpha1 "k8s.io/client-go/kubernetes/typed/apiserverinternal/v1alpha1/fake"
 	appsv1 "k8s.io/client-go/kubernetes/typed/apps/v1"
 	fakeappsv1 "k8s.io/client-go/kubernetes/typed/apps/v1/fake"
 	appsv1beta1 "k8s.io/client-go/kubernetes/typed/apps/v1beta1"
@@ -52,8 +54,6 @@ import (
 	fakebatchv1 "k8s.io/client-go/kubernetes/typed/batch/v1/fake"
 	batchv1beta1 "k8s.io/client-go/kubernetes/typed/batch/v1beta1"
 	fakebatchv1beta1 "k8s.io/client-go/kubernetes/typed/batch/v1beta1/fake"
-	batchv2alpha1 "k8s.io/client-go/kubernetes/typed/batch/v2alpha1"
-	fakebatchv2alpha1 "k8s.io/client-go/kubernetes/typed/batch/v2alpha1/fake"
 	certificatesv1 "k8s.io/client-go/kubernetes/typed/certificates/v1"
 	fakecertificatesv1 "k8s.io/client-go/kubernetes/typed/certificates/v1/fake"
 	certificatesv1beta1 "k8s.io/client-go/kubernetes/typed/certificates/v1beta1"
@@ -68,16 +68,22 @@ import (
 	fakediscoveryv1alpha1 "k8s.io/client-go/kubernetes/typed/discovery/v1alpha1/fake"
 	discoveryv1beta1 "k8s.io/client-go/kubernetes/typed/discovery/v1beta1"
 	fakediscoveryv1beta1 "k8s.io/client-go/kubernetes/typed/discovery/v1beta1/fake"
+	eventsv1 "k8s.io/client-go/kubernetes/typed/events/v1"
+	fakeeventsv1 "k8s.io/client-go/kubernetes/typed/events/v1/fake"
 	eventsv1beta1 "k8s.io/client-go/kubernetes/typed/events/v1beta1"
 	fakeeventsv1beta1 "k8s.io/client-go/kubernetes/typed/events/v1beta1/fake"
 	extensionsv1beta1 "k8s.io/client-go/kubernetes/typed/extensions/v1beta1"
 	fakeextensionsv1beta1 "k8s.io/client-go/kubernetes/typed/extensions/v1beta1/fake"
 	flowcontrolv1alpha1 "k8s.io/client-go/kubernetes/typed/flowcontrol/v1alpha1"
 	fakeflowcontrolv1alpha1 "k8s.io/client-go/kubernetes/typed/flowcontrol/v1alpha1/fake"
+	flowcontrolv1beta1 "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta1"
+	fakeflowcontrolv1beta1 "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta1/fake"
 	networkingv1 "k8s.io/client-go/kubernetes/typed/networking/v1"
 	fakenetworkingv1 "k8s.io/client-go/kubernetes/typed/networking/v1/fake"
 	networkingv1beta1 "k8s.io/client-go/kubernetes/typed/networking/v1beta1"
 	fakenetworkingv1beta1 "k8s.io/client-go/kubernetes/typed/networking/v1beta1/fake"
+	nodev1 "k8s.io/client-go/kubernetes/typed/node/v1"
+	fakenodev1 "k8s.io/client-go/kubernetes/typed/node/v1/fake"
 	nodev1alpha1 "k8s.io/client-go/kubernetes/typed/node/v1alpha1"
 	fakenodev1alpha1 "k8s.io/client-go/kubernetes/typed/node/v1alpha1/fake"
 	nodev1beta1 "k8s.io/client-go/kubernetes/typed/node/v1beta1"
@@ -96,8 +102,6 @@ import (
 	fakeschedulingv1alpha1 "k8s.io/client-go/kubernetes/typed/scheduling/v1alpha1/fake"
 	schedulingv1beta1 "k8s.io/client-go/kubernetes/typed/scheduling/v1beta1"
 	fakeschedulingv1beta1 "k8s.io/client-go/kubernetes/typed/scheduling/v1beta1/fake"
-	settingsv1alpha1 "k8s.io/client-go/kubernetes/typed/settings/v1alpha1"
-	fakesettingsv1alpha1 "k8s.io/client-go/kubernetes/typed/settings/v1alpha1/fake"
 	storagev1 "k8s.io/client-go/kubernetes/typed/storage/v1"
 	fakestoragev1 "k8s.io/client-go/kubernetes/typed/storage/v1/fake"
 	storagev1alpha1 "k8s.io/client-go/kubernetes/typed/storage/v1alpha1"
@@ -164,6 +168,11 @@ func (c *Clientset) AdmissionregistrationV1beta1() admissionregistrationv1beta1.
 	return &fakeadmissionregistrationv1beta1.FakeAdmissionregistrationV1beta1{Fake: &c.Fake}
 }
 
+// InternalV1alpha1 retrieves the InternalV1alpha1Client
+func (c *Clientset) InternalV1alpha1() internalv1alpha1.InternalV1alpha1Interface {
+	return &fakeinternalv1alpha1.FakeInternalV1alpha1{Fake: &c.Fake}
+}
+
 // AppsV1 retrieves the AppsV1Client
 func (c *Clientset) AppsV1() appsv1.AppsV1Interface {
 	return &fakeappsv1.FakeAppsV1{Fake: &c.Fake}
@@ -224,11 +233,6 @@ func (c *Clientset) BatchV1beta1() batchv1beta1.BatchV1beta1Interface {
 	return &fakebatchv1beta1.FakeBatchV1beta1{Fake: &c.Fake}
 }
 
-// BatchV2alpha1 retrieves the BatchV2alpha1Client
-func (c *Clientset) BatchV2alpha1() batchv2alpha1.BatchV2alpha1Interface {
-	return &fakebatchv2alpha1.FakeBatchV2alpha1{Fake: &c.Fake}
-}
-
 // CertificatesV1 retrieves the CertificatesV1Client
 func (c *Clientset) CertificatesV1() certificatesv1.CertificatesV1Interface {
 	return &fakecertificatesv1.FakeCertificatesV1{Fake: &c.Fake}
@@ -264,6 +268,11 @@ func (c *Clientset) DiscoveryV1beta1() discoveryv1beta1.DiscoveryV1beta1Interfac
 	return &fakediscoveryv1beta1.FakeDiscoveryV1beta1{Fake: &c.Fake}
 }
 
+// EventsV1 retrieves the EventsV1Client
+func (c *Clientset) EventsV1() eventsv1.EventsV1Interface {
+	return &fakeeventsv1.FakeEventsV1{Fake: &c.Fake}
+}
+
 // EventsV1beta1 retrieves the EventsV1beta1Client
 func (c *Clientset) EventsV1beta1() eventsv1beta1.EventsV1beta1Interface {
 	return &fakeeventsv1beta1.FakeEventsV1beta1{Fake: &c.Fake}
@@ -279,6 +288,11 @@ func (c *Clientset) FlowcontrolV1alpha1() flowcontrolv1alpha1.FlowcontrolV1alpha
 	return &fakeflowcontrolv1alpha1.FakeFlowcontrolV1alpha1{Fake: &c.Fake}
 }
 
+// FlowcontrolV1beta1 retrieves the FlowcontrolV1beta1Client
+func (c *Clientset) FlowcontrolV1beta1() flowcontrolv1beta1.FlowcontrolV1beta1Interface {
+	return &fakeflowcontrolv1beta1.FakeFlowcontrolV1beta1{Fake: &c.Fake}
+}
+
 // NetworkingV1 retrieves the NetworkingV1Client
 func (c *Clientset) NetworkingV1() networkingv1.NetworkingV1Interface {
 	return &fakenetworkingv1.FakeNetworkingV1{Fake: &c.Fake}
@@ -287,6 +301,11 @@ func (c *Clientset) NetworkingV1() networkingv1.NetworkingV1Interface {
 // NetworkingV1beta1 retrieves the NetworkingV1beta1Client
 func (c *Clientset) NetworkingV1beta1() networkingv1beta1.NetworkingV1beta1Interface {
 	return &fakenetworkingv1beta1.FakeNetworkingV1beta1{Fake: &c.Fake}
+}
+
+// NodeV1 retrieves the NodeV1Client
+func (c *Clientset) NodeV1() nodev1.NodeV1Interface {
+	return &fakenodev1.FakeNodeV1{Fake: &c.Fake}
 }
 
 // NodeV1alpha1 retrieves the NodeV1alpha1Client
@@ -332,11 +351,6 @@ func (c *Clientset) SchedulingV1beta1() schedulingv1beta1.SchedulingV1beta1Inter
 // SchedulingV1 retrieves the SchedulingV1Client
 func (c *Clientset) SchedulingV1() schedulingv1.SchedulingV1Interface {
 	return &fakeschedulingv1.FakeSchedulingV1{Fake: &c.Fake}
-}
-
-// SettingsV1alpha1 retrieves the SettingsV1alpha1Client
-func (c *Clientset) SettingsV1alpha1() settingsv1alpha1.SettingsV1alpha1Interface {
-	return &fakesettingsv1alpha1.FakeSettingsV1alpha1{Fake: &c.Fake}
 }
 
 // StorageV1beta1 retrieves the StorageV1beta1Client

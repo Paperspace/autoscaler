@@ -23,6 +23,8 @@ package kubemark
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -35,7 +37,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/pkg/kubemark"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	klog "k8s.io/klog/v2"
 )
@@ -120,6 +122,10 @@ func (kubemark *KubemarkCloudProvider) Pricing() (cloudprovider.PricingModel, er
 
 // NodeGroupForNode returns the node group for the given node.
 func (kubemark *KubemarkCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
+	// Skip nodes that are not managed by Kubemark Cloud Provider.
+	if !strings.HasPrefix(node.Spec.ProviderID, ProviderName) {
+		return nil, nil
+	}
 	nodeGroupName, err := kubemark.kubemarkController.GetNodeGroupForNode(node.ObjectMeta.Name)
 	if err != nil {
 		return nil, err
@@ -197,7 +203,7 @@ func (nodeGroup *NodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 		return instances, err
 	}
 	for _, node := range nodes {
-		instances = append(instances, cloudprovider.Instance{Id: ":////" + node})
+		instances = append(instances, cloudprovider.Instance{Id: "kubemark://" + node})
 	}
 	return instances, nil
 }
@@ -290,6 +296,12 @@ func (nodeGroup *NodeGroup) Autoprovisioned() bool {
 	return false
 }
 
+// GetOptions returns NodeGroupAutoscalingOptions that should be used for this particular
+// NodeGroup. Returning a nil will result in using default options.
+func (nodeGroup *NodeGroup) GetOptions(defaults config.NodeGroupAutoscalingOptions) (*config.NodeGroupAutoscalingOptions, error) {
+	return nil, cloudprovider.ErrNotImplemented
+}
+
 func buildNodeGroup(value string, kubemarkController *kubemark.KubemarkController) (*NodeGroup, error) {
 	spec, err := dynamic.SpecFromString(value, true)
 	if err != nil {
@@ -313,9 +325,13 @@ func BuildKubemark(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDis
 		klog.Fatalf("Failed to get kubeclient config for external cluster: %v", err)
 	}
 
-	kubemarkConfig, err := clientcmd.BuildConfigFromFlags("", "/kubeconfig/cluster_autoscaler.kubeconfig")
-	if err != nil {
-		klog.Fatalf("Failed to get kubeclient config for kubemark cluster: %v", err)
+	// Use provided kubeconfig or fallback to InClusterConfig
+	kubemarkConfig := externalConfig
+	kubemarkConfigPath := "/kubeconfig/cluster_autoscaler.kubeconfig"
+	if _, err := os.Stat(kubemarkConfigPath); !os.IsNotExist(err) {
+		if kubemarkConfig, err = clientcmd.BuildConfigFromFlags("", kubemarkConfigPath); err != nil {
+			klog.Fatalf("Failed to get kubeclient config for kubemark cluster: %v", err)
+		}
 	}
 
 	stop := make(chan struct{})

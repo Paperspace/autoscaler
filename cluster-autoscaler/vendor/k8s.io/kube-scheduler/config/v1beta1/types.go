@@ -44,6 +44,9 @@ const (
 type KubeSchedulerConfiguration struct {
 	metav1.TypeMeta `json:",inline"`
 
+	// Parallelism defines the amount of parallelism in algorithms for scheduling a Pods. Must be greater than 0. Defaults to 16
+	Parallelism *int32 `json:"parallelism,omitempty"`
+
 	// LeaderElection defines the configuration of leader election client.
 	LeaderElection componentbaseconfigv1alpha1.LeaderElectionConfiguration `json:"leaderElection"`
 
@@ -60,9 +63,6 @@ type KubeSchedulerConfiguration struct {
 	// DebuggingConfiguration holds configuration for Debugging related features
 	// TODO: We might wanna make this a substruct like Debugging componentbaseconfigv1alpha1.DebuggingConfiguration
 	componentbaseconfigv1alpha1.DebuggingConfiguration `json:",inline"`
-
-	// DisablePreemption disables the pod preemption feature.
-	DisablePreemption *bool `json:"disablePreemption,omitempty"`
 
 	// PercentageOfNodesToScore is the percentage of all nodes that once found feasible
 	// for running a pod, the scheduler stops its search for more feasible nodes in

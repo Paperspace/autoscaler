@@ -38,8 +38,11 @@ import (
 )
 
 const (
-	// Taken from lmctfy https://github.com/google/lmctfy/blob/master/lmctfy/controllers/cpu_controller.cc
-	MinShares     = 2
+	// These limits are defined in the kernel:
+	// https://github.com/torvalds/linux/blob/0bddd227f3dc55975e2b8dfa7fc6f959b062a2c7/kernel/sched/sched.h#L427-L428
+	MinShares = 2
+	MaxShares = 262144
+
 	SharesPerCPU  = 1024
 	MilliCPUToCPU = 1000
 
@@ -87,6 +90,9 @@ func MilliCPUToShares(milliCPU int64) uint64 {
 	shares := (milliCPU * SharesPerCPU) / MilliCPUToCPU
 	if shares < MinShares {
 		return MinShares
+	}
+	if shares > MaxShares {
+		return MaxShares
 	}
 	return uint64(shares)
 }
@@ -196,8 +202,16 @@ func getCgroupSubsystemsV1() (*CgroupSubsystems, error) {
 	}
 	mountPoints := make(map[string]string, len(allCgroups))
 	for _, mount := range allCgroups {
+		// BEFORE kubelet used a random mount point per cgroups subsystem;
+		// NOW    more deterministic: kubelet use mount point with shortest path;
+		// FUTURE is bright with clear expectation determined in doc.
+		// ref. issue: https://github.com/kubernetes/kubernetes/issues/95488
+
 		for _, subsystem := range mount.Subsystems {
-			mountPoints[subsystem] = mount.Mountpoint
+			previous := mountPoints[subsystem]
+			if previous == "" || len(mount.Mountpoint) < len(previous) {
+				mountPoints[subsystem] = mount.Mountpoint
+			}
 		}
 	}
 	return &CgroupSubsystems{

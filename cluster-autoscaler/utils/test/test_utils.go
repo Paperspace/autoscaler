@@ -225,7 +225,7 @@ func NewHttpServerMock() *HttpServerMock {
 	mux.HandleFunc("/",
 		func(w http.ResponseWriter, req *http.Request) {
 			result := httpServerMock.handle(req.URL.Path)
-			w.Write([]byte(result))
+			_, _ = w.Write([]byte(result))
 		})
 
 	server := httptest.NewServer(mux)
@@ -236,4 +236,46 @@ func NewHttpServerMock() *HttpServerMock {
 func (l *HttpServerMock) handle(url string) string {
 	args := l.Called(url)
 	return args.String(0)
+}
+
+// NewHttpServerMockWithStatusCode creates new HttpServerMock.
+func NewHttpServerMockWithStatusCode() *HttpServerMock {
+	httpServerMock := &HttpServerMock{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/",
+		func(w http.ResponseWriter, req *http.Request) {
+			code, result := httpServerMock.handleWithStatusCode(req.URL.Path)
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(result))
+		})
+
+	server := httptest.NewServer(mux)
+	httpServerMock.Server = server
+	return httpServerMock
+}
+
+func (l *HttpServerMock) handleWithStatusCode(url string) (int, string) {
+	args := l.Called(url)
+	return args.Int(0), args.String(1)
+}
+
+// NewHttpServerMockWithContentType creates new HttpServerMock.
+func NewHttpServerMockWithContentType() *HttpServerMock {
+	httpServerMock := &HttpServerMock{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/",
+		func(w http.ResponseWriter, req *http.Request) {
+			contentType, result := httpServerMock.handleWithContentType(req.URL.Path)
+			w.Header().Set("Content-Type", contentType)
+			_, _ = w.Write([]byte(result))
+		})
+
+	server := httptest.NewServer(mux)
+	httpServerMock.Server = server
+	return httpServerMock
+}
+
+func (l *HttpServerMock) handleWithContentType(url string) (string, string) {
+	args := l.Called(url)
+	return args.String(0), args.String(1)
 }

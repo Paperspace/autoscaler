@@ -38,10 +38,9 @@ func newTestScaleSet(manager *AzureManager, name string) *ScaleSet {
 		azureRef: azureRef{
 			Name: name,
 		},
-		manager:           manager,
-		minSize:           1,
-		maxSize:           5,
-		sizeRefreshPeriod: defaultVmssSizeRefreshPeriod,
+		manager: manager,
+		minSize: 1,
+		maxSize: 5,
 	}
 }
 
@@ -76,7 +75,7 @@ func newTestVMSSVMList(count int) []compute.VirtualMachineScaleSetVM {
 
 func TestMaxSize(t *testing.T) {
 	provider := newTestProvider(t)
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
@@ -85,7 +84,7 @@ func TestMaxSize(t *testing.T) {
 
 func TestMinSize(t *testing.T) {
 	provider := newTestProvider(t)
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
@@ -101,13 +100,15 @@ func TestTargetSize(t *testing.T) {
 
 	provider := newTestProvider(t)
 	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
-	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil)
+	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
 	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
 
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
@@ -133,15 +134,18 @@ func TestIncreaseSize(t *testing.T) {
 	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
 	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
 
 	ss := newTestScaleSet(provider.azureManager, "test-asg")
 	ss.lastSizeRefresh = time.Now()
+	ss.sizeRefreshPeriod = 1 * time.Minute
 	ss.curSize = -1
-	err := ss.IncreaseSize(100)
+	err = ss.IncreaseSize(100)
 	expectedErr := fmt.Errorf("the scale set test-asg is under initialization, skipping IncreaseSize")
 	assert.Equal(t, expectedErr, err)
 
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
@@ -190,9 +194,9 @@ func TestIncreaseSizeOnVMSSUpdating(t *testing.T) {
 	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
 	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "vmss-updating", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
-	registered := manager.RegisterAsg(newTestScaleSet(manager, vmssName))
+	registered := manager.RegisterNodeGroup(newTestScaleSet(manager, vmssName))
 	assert.True(t, registered)
-	manager.regenerateCache()
+	manager.Refresh()
 
 	provider, err := BuildAzureCloudProvider(manager, nil)
 	assert.NoError(t, err)
@@ -219,15 +223,13 @@ func TestBelongs(t *testing.T) {
 	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
 	assert.True(t, registered)
 
 	scaleSet, ok := provider.NodeGroups()[0].(*ScaleSet)
 	assert.True(t, ok)
-	// TODO: this should call manager.Refresh() once the fetchAutoASG
-	// logic is refactored out
-	provider.azureManager.regenerateCache()
+	provider.azureManager.Refresh()
 
 	invalidNode := &apiv1.Node{
 		Spec: apiv1.NodeSpec{
@@ -266,17 +268,15 @@ func TestDeleteNodes(t *testing.T) {
 	expectedVMSSVMs := newTestVMSSVMList(3)
 
 	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
-	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(2)
 	mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any()).Return(nil, nil)
 	mockVMSSClient.EXPECT().WaitForAsyncOperationResult(gomock.Any(), gomock.Any()).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
 	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
-
-	// TODO: this should call manager.Refresh() once the fetchAutoASG
-	// logic is refactored out
-	manager.regenerateCache()
+	err := manager.forceRefresh()
+	assert.NoError(t, err)
 
 	resourceLimiter := cloudprovider.NewResourceLimiter(
 		map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
@@ -284,12 +284,11 @@ func TestDeleteNodes(t *testing.T) {
 	provider, err := BuildAzureCloudProvider(manager, resourceLimiter)
 	assert.NoError(t, err)
 
-	registered := manager.RegisterAsg(
+	registered := manager.RegisterNodeGroup(
 		newTestScaleSet(manager, "test-asg"))
 	assert.True(t, registered)
-	// TODO: this should call manager.Refresh() once the fetchAutoASG
-	// logic is refactored out
-	manager.regenerateCache()
+	err = manager.forceRefresh()
+	assert.NoError(t, err)
 
 	scaleSet, ok := provider.NodeGroups()[0].(*ScaleSet)
 	assert.True(t, ok)
@@ -313,11 +312,35 @@ func TestDeleteNodes(t *testing.T) {
 	}
 	err = scaleSet.DeleteNodes(nodesToDelete)
 	assert.NoError(t, err)
+	vmssCapacity = 1
+	expectedScaleSets = []compute.VirtualMachineScaleSet{
+		{
+			Name: &vmssName,
+			Sku: &compute.Sku{
+				Capacity: &vmssCapacity,
+			},
+		},
+	}
+	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+	expectedVMSSVMs[0].ProvisioningState = to.StringPtr(string(compute.ProvisioningStateDeleting))
+	expectedVMSSVMs[2].ProvisioningState = to.StringPtr(string(compute.ProvisioningStateDeleting))
+	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+	err = manager.forceRefresh()
+	assert.NoError(t, err)
 
 	// Ensure the the cached size has been proactively decremented by 2
 	targetSize, err = scaleSet.TargetSize()
 	assert.NoError(t, err)
 	assert.Equal(t, 1, targetSize)
+
+	// Ensure that the status for the instances is Deleting
+	instance0, found := scaleSet.getInstanceByProviderID("azure://" + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0))
+	assert.True(t, found, true)
+	assert.Equal(t, instance0.Status.State, cloudprovider.InstanceDeleting)
+
+	instance2, found := scaleSet.getInstanceByProviderID("azure://" + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 2))
+	assert.True(t, found, true)
+	assert.Equal(t, instance2.Status.State, cloudprovider.InstanceDeleting)
 }
 
 func TestDeleteNoConflictRequest(t *testing.T) {
@@ -361,9 +384,9 @@ func TestDeleteNoConflictRequest(t *testing.T) {
 	provider, err := BuildAzureCloudProvider(manager, resourceLimiter)
 	assert.NoError(t, err)
 
-	registered := manager.RegisterAsg(newTestScaleSet(manager, "test-asg"))
+	registered := manager.RegisterNodeGroup(newTestScaleSet(manager, "test-asg"))
 	assert.True(t, registered)
-	manager.regenerateCache()
+	manager.Refresh()
 
 	node := &apiv1.Node{
 		Spec: apiv1.NodeSpec{
@@ -379,7 +402,7 @@ func TestDeleteNoConflictRequest(t *testing.T) {
 
 func TestId(t *testing.T) {
 	provider := newTestProvider(t)
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
@@ -411,11 +434,9 @@ func TestScaleSetNodes(t *testing.T) {
 	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
-	// TODO: this should call manager.Refresh() once the fetchAutoASG
-	// logic is refactored out
-	provider.azureManager.regenerateCache()
+	provider.azureManager.Refresh()
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
 
@@ -452,8 +473,10 @@ func TestTemplateNodeInfo(t *testing.T) {
 	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
 
-	registered := provider.azureManager.RegisterAsg(
+	registered := provider.azureManager.RegisterNodeGroup(
 		newTestScaleSet(provider.azureManager, "test-asg"))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
@@ -469,74 +492,4 @@ func TestTemplateNodeInfo(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, nodeInfo)
 	assert.NotEmpty(t, nodeInfo.Pods)
-}
-func TestExtractLabelsFromScaleSet(t *testing.T) {
-	expectedNodeLabelKey := "zip"
-	expectedNodeLabelValue := "zap"
-	extraNodeLabelValue := "buzz"
-	blankString := ""
-
-	tags := map[string]*string{
-		fmt.Sprintf("%s%s", nodeLabelTagName, expectedNodeLabelKey): &expectedNodeLabelValue,
-		"fizz": &extraNodeLabelValue,
-		"bip":  &blankString,
-	}
-
-	labels := extractLabelsFromScaleSet(tags)
-	assert.Len(t, labels, 1)
-	assert.Equal(t, expectedNodeLabelValue, labels[expectedNodeLabelKey])
-}
-
-func TestExtractTaintsFromScaleSet(t *testing.T) {
-	noScheduleTaintValue := "foo:NoSchedule"
-	noExecuteTaintValue := "bar:NoExecute"
-	preferNoScheduleTaintValue := "fizz:PreferNoSchedule"
-	noSplitTaintValue := "some_value"
-	blankTaintValue := ""
-	regularTagValue := "baz"
-
-	tags := map[string]*string{
-		fmt.Sprintf("%s%s", nodeTaintTagName, "dedicated"):                          &noScheduleTaintValue,
-		fmt.Sprintf("%s%s", nodeTaintTagName, "group"):                              &noExecuteTaintValue,
-		fmt.Sprintf("%s%s", nodeTaintTagName, "app"):                                &preferNoScheduleTaintValue,
-		fmt.Sprintf("%s%s", nodeTaintTagName, "k8s.io_testing_underscore_to_slash"): &preferNoScheduleTaintValue,
-		"bar": &regularTagValue,
-		fmt.Sprintf("%s%s", nodeTaintTagName, "blank"):   &blankTaintValue,
-		fmt.Sprintf("%s%s", nodeTaintTagName, "nosplit"): &noSplitTaintValue,
-	}
-
-	expectedTaints := []apiv1.Taint{
-		{
-			Key:    "dedicated",
-			Value:  "foo",
-			Effect: apiv1.TaintEffectNoSchedule,
-		},
-		{
-			Key:    "group",
-			Value:  "bar",
-			Effect: apiv1.TaintEffectNoExecute,
-		},
-		{
-			Key:    "app",
-			Value:  "fizz",
-			Effect: apiv1.TaintEffectPreferNoSchedule,
-		},
-		{
-			Key:    "k8s.io/testing/underscore/to/slash",
-			Value:  "fizz",
-			Effect: apiv1.TaintEffectPreferNoSchedule,
-		},
-	}
-
-	taints := extractTaintsFromScaleSet(tags)
-	assert.Len(t, taints, 4)
-	assert.Equal(t, makeTaintSet(expectedTaints), makeTaintSet(taints))
-}
-
-func makeTaintSet(taints []apiv1.Taint) map[apiv1.Taint]bool {
-	set := make(map[apiv1.Taint]bool)
-	for _, taint := range taints {
-		set[taint] = true
-	}
-	return set
 }

@@ -68,7 +68,7 @@ func TestUpdateResourceRequests(t *testing.T) {
 		WithLabels(labels).Get()
 
 	initializedContainer := test.Container().WithName(containerName).
-		WithCPURequest(resource.MustParse("1")).WithCPURequest(resource.MustParse("2")).WithMemRequest(resource.MustParse("100Mi")).Get()
+		WithCPURequest(resource.MustParse("2")).WithMemRequest(resource.MustParse("100Mi")).Get()
 	initialized := test.Pod().WithName("test_initialized").
 		AddContainer(initializedContainer).WithLabels(labels).Get()
 
@@ -99,6 +99,11 @@ func TestUpdateResourceRequests(t *testing.T) {
 	targetAboveMaxVPA := vpaBuilder.WithTarget("7", "2Gi").WithMinAllowed("4", "300Mi").WithMaxAllowed("5", "1Gi").Get()
 	vpaWithHighMemory := vpaBuilder.WithTarget("2", "1000Mi").WithMaxAllowed("3", "3Gi").Get()
 	vpaWithExabyteRecommendation := vpaBuilder.WithTarget("1Ei", "1Ei").WithMaxAllowed("1Ei", "1Ei").Get()
+
+	resourceRequestsAndLimitsVPA := vpaBuilder.WithControlledValues(vpa_types.ContainerControlledValuesRequestsAndLimits).Get()
+	resourceRequestsOnlyVPA := vpaBuilder.WithControlledValues(vpa_types.ContainerControlledValuesRequestsOnly).Get()
+	resourceRequestsOnlyVPAHighTarget := vpaBuilder.WithControlledValues(vpa_types.ContainerControlledValuesRequestsOnly).
+		WithTarget("3", "500Mi").WithMaxAllowed("5", "1Gi").Get()
 
 	vpaWithEmptyRecommendation := vpaBuilder.Get()
 	vpaWithEmptyRecommendation.Status.Recommendation = &vpa_types.RecommendedPodResources{}
@@ -174,6 +179,7 @@ func TestUpdateResourceRequests(t *testing.T) {
 			expectedCPU:    resource.MustParse("0"),
 		},
 		{
+			name:           "nil recommendation",
 			pod:            initialized,
 			vpa:            vpaWithNilRecommendation,
 			expectedAction: true,
@@ -201,7 +207,7 @@ func TestUpdateResourceRequests(t *testing.T) {
 			expectedMemLimit: mustParseResourcePointer("200Mi"),
 		},
 		{
-			name:             "proportional limit",
+			name:             "proportional limit - as default",
 			pod:              podWithDoubleLimit,
 			vpa:              vpa,
 			expectedAction:   true,
@@ -209,6 +215,38 @@ func TestUpdateResourceRequests(t *testing.T) {
 			expectedMem:      resource.MustParse("200Mi"),
 			expectedCPULimit: mustParseResourcePointer("4"),
 			expectedMemLimit: mustParseResourcePointer("400Mi"),
+		},
+		{
+			name:             "proportional limit - set explicit",
+			pod:              podWithDoubleLimit,
+			vpa:              resourceRequestsAndLimitsVPA,
+			expectedAction:   true,
+			expectedCPU:      resource.MustParse("2"),
+			expectedMem:      resource.MustParse("200Mi"),
+			expectedCPULimit: mustParseResourcePointer("4"),
+			expectedMemLimit: mustParseResourcePointer("400Mi"),
+		},
+		{
+			name:           "disabled limit scaling",
+			pod:            podWithDoubleLimit,
+			vpa:            resourceRequestsOnlyVPA,
+			expectedAction: true,
+			expectedCPU:    resource.MustParse("2"),
+			expectedMem:    resource.MustParse("200Mi"),
+		},
+		{
+			name:           "disabled limit scaling - requests capped at limit",
+			pod:            podWithDoubleLimit,
+			vpa:            resourceRequestsOnlyVPAHighTarget,
+			expectedAction: true,
+			expectedCPU:    resource.MustParse("2"),
+			expectedMem:    resource.MustParse("200Mi"),
+			annotations: vpa_api_util.ContainerToAnnotationsMap{
+				containerName: []string{
+					"cpu capped to container limit",
+					"memory capped to container limit",
+				},
+			},
 		},
 		{
 			name:             "limit over int64",

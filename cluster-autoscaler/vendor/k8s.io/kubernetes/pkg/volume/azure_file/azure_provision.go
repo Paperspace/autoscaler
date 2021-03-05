@@ -33,6 +33,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/legacy-cloud-providers/azure"
+	"k8s.io/legacy-cloud-providers/azure/clients/fileclient"
 	utilstrings "k8s.io/utils/strings"
 )
 
@@ -47,7 +48,7 @@ var (
 // azure cloud provider should implement it
 type azureCloudProvider interface {
 	// create a file share
-	CreateFileShare(shareName, accountName, accountType, accountKind, resourceGroup, location string, protocol storage.EnabledProtocols, requestGiB int) (string, string, error)
+	CreateFileShare(account *azure.AccountOptions, fileShare *fileclient.ShareOptions) (string, string, error)
 	// delete a file share
 	DeleteFileShare(resourceGroup, accountName, shareName string) error
 	// resize a file share
@@ -78,7 +79,7 @@ func (plugin *azureFilePlugin) newDeleterInternal(spec *volume.Spec, util azureU
 		return nil, fmt.Errorf("invalid PV spec")
 	}
 
-	secretName, secretNamespace, err := getSecretNameAndNamespace(spec, spec.PersistentVolume.Spec.ClaimRef.Namespace)
+	secretName, secretNamespace, err := getSecretNameAndNamespace(spec, defaultSecretNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +156,7 @@ func (a *azureFileProvisioner) Provision(selectedNode *v1.Node, allowedTopologie
 		return nil, fmt.Errorf("%s does not support block volume provisioning", a.plugin.GetPluginName())
 	}
 
-	var sku, resourceGroup, location, account, shareName string
+	var sku, resourceGroup, location, account, shareName, customTags string
 
 	capacity := a.options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 	requestGiB, err := volumehelpers.RoundUpToGiBInt(capacity)
@@ -180,6 +181,8 @@ func (a *azureFileProvisioner) Provision(selectedNode *v1.Node, allowedTopologie
 			resourceGroup = v
 		case "sharename":
 			shareName = v
+		case "tags":
+			customTags = v
 		default:
 			return nil, fmt.Errorf("invalid option %q for volume plugin %s", k, a.plugin.GetPluginName())
 		}
@@ -187,6 +190,11 @@ func (a *azureFileProvisioner) Provision(selectedNode *v1.Node, allowedTopologie
 	// TODO: implement c.options.ProvisionerSelector parsing
 	if a.options.PVC.Spec.Selector != nil {
 		return nil, fmt.Errorf("claim.Spec.Selector is not supported for dynamic provisioning on Azure file")
+	}
+
+	tags, err := azure.ConvertTagsToMap(customTags)
+	if err != nil {
+		return nil, err
 	}
 
 	if shareName == "" {
@@ -199,12 +207,33 @@ func (a *azureFileProvisioner) Provision(selectedNode *v1.Node, allowedTopologie
 		resourceGroup = a.options.PVC.ObjectMeta.Annotations[resourceGroupAnnotation]
 	}
 
+	fileShareSize := int(requestGiB)
 	// when use azure file premium, account kind should be specified as FileStorage
 	accountKind := string(storage.StorageV2)
 	if strings.HasPrefix(strings.ToLower(sku), "premium") {
 		accountKind = string(storage.FileStorage)
+		// when using azure file premium, the shares have a minimum size
+		if fileShareSize < minimumPremiumShareSize {
+			fileShareSize = minimumPremiumShareSize
+		}
 	}
-	account, key, err := a.azureProvider.CreateFileShare(shareName, account, sku, accountKind, resourceGroup, location, storage.SMB, requestGiB)
+
+	accountOptions := &azure.AccountOptions{
+		Name:          account,
+		Type:          sku,
+		Kind:          accountKind,
+		ResourceGroup: resourceGroup,
+		Location:      location,
+		Tags:          tags,
+	}
+
+	shareOptions := &fileclient.ShareOptions{
+		Name:       shareName,
+		Protocol:   storage.SMB,
+		RequestGiB: fileShareSize,
+	}
+
+	account, key, err := a.azureProvider.CreateFileShare(accountOptions, shareOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +257,7 @@ func (a *azureFileProvisioner) Provision(selectedNode *v1.Node, allowedTopologie
 			PersistentVolumeReclaimPolicy: a.options.PersistentVolumeReclaimPolicy,
 			AccessModes:                   a.options.PVC.Spec.AccessModes,
 			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): resource.MustParse(fmt.Sprintf("%dGi", requestGiB)),
+				v1.ResourceName(v1.ResourceStorage): resource.MustParse(fmt.Sprintf("%dGi", fileShareSize)),
 			},
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 				AzureFile: &v1.AzureFilePersistentVolumeSource{

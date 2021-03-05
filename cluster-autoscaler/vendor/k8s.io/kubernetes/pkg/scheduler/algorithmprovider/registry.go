@@ -17,8 +17,7 @@ limitations under the License.
 package algorithmprovider
 
 import (
-	"sort"
-	"strings"
+	"fmt"
 
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
@@ -66,23 +65,17 @@ func NewRegistry() Registry {
 
 // ListAlgorithmProviders lists registered algorithm providers.
 func ListAlgorithmProviders() string {
-	r := NewRegistry()
-	var providers []string
-	for k := range r {
-		providers = append(providers, k)
-	}
-	sort.Strings(providers)
-	return strings.Join(providers, " | ")
+	return fmt.Sprintf("%s | %s", ClusterAutoscalerProvider, schedulerapi.SchedulerDefaultProviderName)
 }
 
 func getDefaultConfig() *schedulerapi.Plugins {
 	return &schedulerapi.Plugins{
-		QueueSort: &schedulerapi.PluginSet{
+		QueueSort: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: queuesort.Name},
 			},
 		},
-		PreFilter: &schedulerapi.PluginSet{
+		PreFilter: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: noderesources.FitName},
 				{Name: nodeports.Name},
@@ -91,15 +84,15 @@ func getDefaultConfig() *schedulerapi.Plugins {
 				{Name: volumebinding.Name},
 			},
 		},
-		Filter: &schedulerapi.PluginSet{
+		Filter: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: nodeunschedulable.Name},
-				{Name: noderesources.FitName},
 				{Name: nodename.Name},
-				{Name: nodeports.Name},
-				{Name: nodeaffinity.Name},
-				{Name: volumerestrictions.Name},
 				{Name: tainttoleration.Name},
+				{Name: nodeaffinity.Name},
+				{Name: nodeports.Name},
+				{Name: noderesources.FitName},
+				{Name: volumerestrictions.Name},
 				{Name: nodevolumelimits.EBSName},
 				{Name: nodevolumelimits.GCEPDName},
 				{Name: nodevolumelimits.CSIName},
@@ -110,19 +103,20 @@ func getDefaultConfig() *schedulerapi.Plugins {
 				{Name: interpodaffinity.Name},
 			},
 		},
-		PostFilter: &schedulerapi.PluginSet{
+		PostFilter: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: defaultpreemption.Name},
 			},
 		},
-		PreScore: &schedulerapi.PluginSet{
+		PreScore: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: interpodaffinity.Name},
 				{Name: podtopologyspread.Name},
 				{Name: tainttoleration.Name},
+				{Name: nodeaffinity.Name},
 			},
 		},
-		Score: &schedulerapi.PluginSet{
+		Score: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: noderesources.BalancedAllocationName, Weight: 1},
 				{Name: imagelocality.Name, Weight: 1},
@@ -137,17 +131,17 @@ func getDefaultConfig() *schedulerapi.Plugins {
 				{Name: tainttoleration.Name, Weight: 1},
 			},
 		},
-		Reserve: &schedulerapi.PluginSet{
+		Reserve: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: volumebinding.Name},
 			},
 		},
-		PreBind: &schedulerapi.PluginSet{
+		PreBind: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: volumebinding.Name},
 			},
 		},
-		Bind: &schedulerapi.PluginSet{
+		Bind: schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: defaultbinder.Name},
 			},

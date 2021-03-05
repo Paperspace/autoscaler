@@ -54,7 +54,7 @@ type csiClient interface {
 		fsType string,
 		mountOptions []string,
 	) error
-	NodeExpandVolume(ctx context.Context, volumeid, volumePath string, newSize resource.Quantity) (resource.Quantity, error)
+	NodeExpandVolume(ctx context.Context, rsOpts csiResizeOptions) (resource.Quantity, error)
 	NodeUnpublishVolume(
 		ctx context.Context,
 		volID string,
@@ -92,12 +92,27 @@ type csiDriverName string
 type csiDriverClient struct {
 	driverName          csiDriverName
 	addr                csiAddr
+	metricsManager      *MetricsManager
 	nodeV1ClientCreator nodeV1ClientCreator
+}
+
+type csiResizeOptions struct {
+	volumeID string
+	// volumePath is path where volume is available. It could be:
+	//   - path where node is staged if NodeExpandVolume is called after NodeStageVolume
+	//   - path where volume is published if NodeExpandVolume is called after NodePublishVolume
+	// DEPRECATION NOTICE: in future NodeExpandVolume will be always called after NodePublish
+	volumePath        string
+	stagingTargetPath string
+	fsType            string
+	accessMode        api.PersistentVolumeAccessMode
+	newSize           resource.Quantity
+	mountOptions      []string
 }
 
 var _ csiClient = &csiDriverClient{}
 
-type nodeV1ClientCreator func(addr csiAddr) (
+type nodeV1ClientCreator func(addr csiAddr, metricsManager *MetricsManager) (
 	nodeClient csipbv1.NodeClient,
 	closer io.Closer,
 	err error,
@@ -108,9 +123,9 @@ type nodeV1ClientCreator func(addr csiAddr) (
 // the gRPC connection when the NodeClient is not used anymore.
 // This is the default implementation for the nodeV1ClientCreator, used in
 // newCsiDriverClient.
-func newV1NodeClient(addr csiAddr) (nodeClient csipbv1.NodeClient, closer io.Closer, err error) {
+func newV1NodeClient(addr csiAddr, metricsManager *MetricsManager) (nodeClient csipbv1.NodeClient, closer io.Closer, err error) {
 	var conn *grpc.ClientConn
-	conn, err = newGrpcConn(addr)
+	conn, err = newGrpcConn(addr, metricsManager)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -134,6 +149,7 @@ func newCsiDriverClient(driverName csiDriverName) (*csiDriverClient, error) {
 		driverName:          driverName,
 		addr:                csiAddr(existingDriver.endpoint),
 		nodeV1ClientCreator: nodeV1ClientCreator,
+		metricsManager:      NewCSIMetricsManager(string(driverName)),
 	}, nil
 }
 
@@ -158,7 +174,7 @@ func (c *csiDriverClient) nodeGetInfoV1(ctx context.Context) (
 	accessibleTopology map[string]string,
 	err error) {
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return "", 0, nil, err
 	}
@@ -202,7 +218,7 @@ func (c *csiDriverClient) NodePublishVolume(
 
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return err
 	}
@@ -245,36 +261,61 @@ func (c *csiDriverClient) NodePublishVolume(
 	return err
 }
 
-func (c *csiDriverClient) NodeExpandVolume(ctx context.Context, volumeID, volumePath string, newSize resource.Quantity) (resource.Quantity, error) {
+func (c *csiDriverClient) NodeExpandVolume(ctx context.Context, opts csiResizeOptions) (resource.Quantity, error) {
 	if c.nodeV1ClientCreator == nil {
-		return newSize, fmt.Errorf("version of CSI driver does not support volume expansion")
+		return opts.newSize, fmt.Errorf("version of CSI driver does not support volume expansion")
 	}
 
-	if volumeID == "" {
-		return newSize, errors.New("missing volume id")
+	if opts.volumeID == "" {
+		return opts.newSize, errors.New("missing volume id")
 	}
-	if volumePath == "" {
-		return newSize, errors.New("missing volume path")
-	}
-
-	if newSize.Value() < 0 {
-		return newSize, errors.New("size can not be less than 0")
+	if opts.volumePath == "" {
+		return opts.newSize, errors.New("missing volume path")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	if opts.newSize.Value() < 0 {
+		return opts.newSize, errors.New("size can not be less than 0")
+	}
+
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
-		return newSize, err
+		return opts.newSize, err
 	}
 	defer closer.Close()
 
 	req := &csipbv1.NodeExpandVolumeRequest{
-		VolumeId:      volumeID,
-		VolumePath:    volumePath,
-		CapacityRange: &csipbv1.CapacityRange{RequiredBytes: newSize.Value()},
+		VolumeId:      opts.volumeID,
+		VolumePath:    opts.volumePath,
+		CapacityRange: &csipbv1.CapacityRange{RequiredBytes: opts.newSize.Value()},
+		VolumeCapability: &csipbv1.VolumeCapability{
+			AccessMode: &csipbv1.VolumeCapability_AccessMode{
+				Mode: asCSIAccessModeV1(opts.accessMode),
+			},
+		},
 	}
+
+	// not all CSI drivers support NodeStageUnstage and hence the StagingTargetPath
+	// should only be set when available
+	if opts.stagingTargetPath != "" {
+		req.StagingTargetPath = opts.stagingTargetPath
+	}
+
+	if opts.fsType == fsTypeBlockName {
+		req.VolumeCapability.AccessType = &csipbv1.VolumeCapability_Block{
+			Block: &csipbv1.VolumeCapability_BlockVolume{},
+		}
+	} else {
+		req.VolumeCapability.AccessType = &csipbv1.VolumeCapability_Mount{
+			Mount: &csipbv1.VolumeCapability_MountVolume{
+				FsType:     opts.fsType,
+				MountFlags: opts.mountOptions,
+			},
+		}
+	}
+
 	resp, err := nodeClient.NodeExpandVolume(ctx, req)
 	if err != nil {
-		return newSize, err
+		return opts.newSize, err
 	}
 	updatedQuantity := resource.NewQuantity(resp.CapacityBytes, resource.BinarySI)
 	return *updatedQuantity, nil
@@ -292,7 +333,7 @@ func (c *csiDriverClient) NodeUnpublishVolume(ctx context.Context, volID string,
 		return errors.New("nodeV1ClientCreate is nil")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return err
 	}
@@ -328,7 +369,7 @@ func (c *csiDriverClient) NodeStageVolume(ctx context.Context,
 		return errors.New("nodeV1ClientCreate is nil")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return err
 	}
@@ -379,7 +420,7 @@ func (c *csiDriverClient) NodeUnstageVolume(ctx context.Context, volID, stagingT
 		return errors.New("nodeV1ClientCreate is nil")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return err
 	}
@@ -399,7 +440,7 @@ func (c *csiDriverClient) NodeSupportsNodeExpand(ctx context.Context) (bool, err
 		return false, errors.New("nodeV1ClientCreate is nil")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return false, err
 	}
@@ -430,7 +471,7 @@ func (c *csiDriverClient) NodeSupportsStageUnstage(ctx context.Context) (bool, e
 		return false, errors.New("nodeV1ClientCreate is nil")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return false, err
 	}
@@ -469,7 +510,7 @@ func asCSIAccessModeV1(am api.PersistentVolumeAccessMode) csipbv1.VolumeCapabili
 	return csipbv1.VolumeCapability_AccessMode_UNKNOWN
 }
 
-func newGrpcConn(addr csiAddr) (*grpc.ClientConn, error) {
+func newGrpcConn(addr csiAddr, metricsManager *MetricsManager) (*grpc.ClientConn, error) {
 	network := "unix"
 	klog.V(4).Infof(log("creating new gRPC connection for [%s://%s]", network, addr))
 
@@ -479,6 +520,7 @@ func newGrpcConn(addr csiAddr) (*grpc.ClientConn, error) {
 		grpc.WithContextDialer(func(ctx context.Context, target string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, target)
 		}),
+		grpc.WithChainUnaryInterceptor(metricsManager.RecordMetricsInterceptor),
 	)
 }
 
@@ -521,7 +563,7 @@ func (c *csiDriverClient) NodeSupportsVolumeStats(ctx context.Context) (bool, er
 		return false, errors.New("nodeV1ClientCreate is nil")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return false, err
 	}
@@ -555,7 +597,7 @@ func (c *csiDriverClient) NodeGetVolumeStats(ctx context.Context, volID string, 
 		return nil, errors.New("nodeV1ClientCreate is nil")
 	}
 
-	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr)
+	nodeClient, closer, err := c.nodeV1ClientCreator(c.addr, c.metricsManager)
 	if err != nil {
 		return nil, err
 	}
